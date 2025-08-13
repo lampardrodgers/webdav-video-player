@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>简单WebDAV连接测试</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; line-height: 1.6; }
+        .result { padding: 10px; margin: 10px 0; border-radius: 4px; }
+        .success { background: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .error { background: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .info { background: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
+        button { padding: 10px 15px; margin: 5px; border: none; border-radius: 4px; cursor: pointer; }
+        .btn-primary { background: #007bff; color: white; }
+        .btn-secondary { background: #6c757d; color: white; }
+        pre { background: #f8f9fa; padding: 10px; border-radius: 4px; font-size: 12px; overflow-x: auto; }
+    </style>
+</head>
+<body>
+    <h1>123pan WebDAV连接测试</h1>
+    
+    <div class="info">
+        <strong>测试信息:</strong><br>
+        服务器: https://webdav-1839857505.pd1.123pan.cn/webdav<br>
+        用户: 18867123055<br>
+        路径: /小鲸鱼
+    </div>
+
+    <div>
+        <button class="btn-primary" onclick="testBasicAuth()">测试基础认证</button>
+        <button class="btn-primary" onclick="testPropfind()">测试PROPFIND</button>
+        <button class="btn-primary" onclick="testCORS()">测试CORS</button>
+        <button class="btn-secondary" onclick="clearResults()">清空结果</button>
+    </div>
+
+    <div id="results"></div>
+
+    <script>
+        const SERVER_URL = 'https://webdav-1839857505.pd1.123pan.cn/webdav';
+        const USERNAME = '18867123055';
+        const PASSWORD = '1x1v8bj1000dbj9o9s1ay9setkp4d8zg';
+        const PATH = '/小鲸鱼';
+
+        function log(message, type = 'info') {
+            const div = document.createElement('div');
+            div.className = `result ${type}`;
+            div.innerHTML = `<strong>[${new Date().toLocaleTimeString()}]</strong> ${message}`;
+            document.getElementById('results').appendChild(div);
+        }
+
+        function clearResults() {
+            document.getElementById('results').innerHTML = '';
+        }
+
+        async function testBasicAuth() {
+            log('测试基础认证...', 'info');
+            
+            try {
+                const auth = btoa(`${USERNAME}:${PASSWORD}`);
+                const response = await fetch(SERVER_URL + PATH, {
+                    method: 'OPTIONS',
+                    headers: {
+                        'Authorization': `Basic ${auth}`
+                    }
+                });
+
+                log(`OPTIONS请求状态: ${response.status}`, response.ok ? 'success' : 'error');
+                log(`响应头: ${JSON.stringify([...response.headers.entries()])}`, 'info');
+
+            } catch (error) {
+                log(`基础认证测试失败: ${error.message}`, 'error');
+                
+                if (error.message.includes('CORS')) {
+                    log('❌ 检测到CORS问题，这是常见的WebDAV浏览器限制', 'error');
+                    log('💡 建议解决方案:', 'info');
+                    log('1. 使用本地HTTP服务器运行应用', 'info');
+                    log('2. 配置服务器支持CORS', 'info');
+                    log('3. 使用代理服务器', 'info');
+                }
+            }
+        }
+
+        async function testPropfind() {
+            log('测试PROPFIND请求...', 'info');
+            
+            try {
+                const auth = btoa(`${USERNAME}:${PASSWORD}`);
+                const response = await fetch(SERVER_URL + PATH, {
+                    method: 'PROPFIND',
+                    headers: {
+                        'Authorization': `Basic ${auth}`,
+                        'Content-Type': 'application/xml; charset=utf-8',
+                        'Depth': '1'
+                    },
+                    body: `<?xml version="1.0" encoding="utf-8" ?>
+                        <d:propfind xmlns:d="DAV:">
+                            <d:prop>
+                                <d:displayname/>
+                                <d:getcontentlength/>
+                                <d:resourcetype/>
+                            </d:prop>
+                        </d:propfind>`
+                });
+
+                if (response.ok) {
+                    const xmlText = await response.text();
+                    log(`✅ PROPFIND成功 (${response.status})`, 'success');
+                    log(`响应长度: ${xmlText.length} 字符`, 'info');
+                    
+                    // 简单解析XML查看文件数量
+                    const fileCount = (xmlText.match(/<d:response>/g) || []).length;
+                    log(`检测到 ${fileCount} 个项目`, 'success');
+                    
+                    if (xmlText.length < 1000) {
+                        log(`响应内容预览: <pre>${xmlText.substring(0, 500)}...</pre>`, 'info');
+                    }
+                } else {
+                    log(`❌ PROPFIND失败: ${response.status} ${response.statusText}`, 'error');
+                }
+
+            } catch (error) {
+                log(`PROPFIND测试失败: ${error.message}`, 'error');
+            }
+        }
+
+        async function testCORS() {
+            log('测试CORS支持...', 'info');
+            
+            try {
+                // 先测试简单请求
+                const response1 = await fetch(SERVER_URL, {
+                    method: 'GET'
+                });
+                log(`GET请求状态: ${response1.status}`, 'info');
+
+                // 检查CORS头
+                const corsHeaders = [
+                    'access-control-allow-origin',
+                    'access-control-allow-methods', 
+                    'access-control-allow-headers'
+                ];
+
+                let corsSupported = false;
+                corsHeaders.forEach(header => {
+                    const value = response1.headers.get(header);
+                    if (value) {
+                        log(`CORS头 ${header}: ${value}`, 'success');
+                        corsSupported = true;
+                    }
+                });
+
+                if (!corsSupported) {
+                    log('❌ 服务器未返回CORS头，可能不支持跨域请求', 'error');
+                    log('🔧 这解释了为什么WebDAV连接失败', 'info');
+                } else {
+                    log('✅ 服务器支持CORS', 'success');
+                }
+
+            } catch (error) {
+                log(`CORS测试失败: ${error.message}`, 'error');
+                
+                if (error.message.includes('CORS') || error.message.includes('blocked')) {
+                    log('🚫 确认: 123pan WebDAV不支持浏览器跨域访问', 'error');
+                    log('📋 推荐解决方案:', 'info');
+                    log('1. 使用支持CORS的WebDAV服务（如Nextcloud）', 'info');
+                    log('2. 设置本地代理服务器', 'info');
+                    log('3. 使用桌面应用而非浏览器应用', 'info');
+                }
+            }
+        }
+
+        // 页面加载时自动运行基础测试
+        window.addEventListener('load', () => {
+            log('🚀 开始自动测试...', 'info');
+            setTimeout(testCORS, 1000);
+        });
+    </script>
+</body>
+</html>

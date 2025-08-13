@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebDAV库调试页面</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .test-result { padding: 10px; margin: 5px 0; border-radius: 4px; }
+        .success { background: #d4edda; color: #155724; }
+        .error { background: #f8d7da; color: #721c24; }
+        .info { background: #d1ecf1; color: #0c5460; }
+        pre { background: #f8f9fa; padding: 10px; border-radius: 4px; overflow-x: auto; }
+    </style>
+</head>
+<body>
+    <h1>WebDAV库加载调试</h1>
+    <div id="results"></div>
+    
+    <h2>测试步骤</h2>
+    <button onclick="testLocalLib()">测试本地库</button>
+    <button onclick="testCDNLib()">测试CDN库</button>
+    <button onclick="testFallback()">测试备用实现</button>
+    <button onclick="testConnection()">测试连接</button>
+    
+    <h2>调试信息</h2>
+    <pre id="debugInfo"></pre>
+
+    <script>
+        function log(message, type = 'info') {
+            const div = document.createElement('div');
+            div.className = `test-result ${type}`;
+            div.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+            document.getElementById('results').appendChild(div);
+            
+            const debugInfo = document.getElementById('debugInfo');
+            debugInfo.textContent += `${new Date().toLocaleTimeString()}: ${message}\n`;
+        }
+
+        function testLocalLib() {
+            log('测试本地WebDAV库...', 'info');
+            
+            const script = document.createElement('script');
+            script.src = 'webdav.min.js';
+            script.onload = () => {
+                if (window.webdav && typeof window.webdav.createClient === 'function') {
+                    log('✅ 本地WebDAV库加载成功', 'success');
+                    log(`库对象: ${JSON.stringify(Object.keys(window.webdav))}`, 'info');
+                } else {
+                    log('❌ 本地WebDAV库加载失败 - 对象不完整', 'error');
+                }
+            };
+            script.onerror = () => {
+                log('❌ 本地WebDAV库文件加载失败', 'error');
+            };
+            document.head.appendChild(script);
+        }
+
+        function testCDNLib() {
+            log('测试CDN WebDAV库...', 'info');
+            
+            const script = document.createElement('script');
+            script.src = 'https://unpkg.com/webdav@5.3.0/dist/web/index.js';
+            script.onload = () => {
+                if (window.webdav && typeof window.webdav.createClient === 'function') {
+                    log('✅ CDN WebDAV库加载成功', 'success');
+                } else {
+                    log('❌ CDN WebDAV库加载失败 - 对象不完整', 'error');
+                }
+            };
+            script.onerror = () => {
+                log('❌ CDN WebDAV库文件加载失败', 'error');
+            };
+            document.head.appendChild(script);
+        }
+
+        function testFallback() {
+            log('加载备用实现...', 'info');
+            
+            const script = document.createElement('script');
+            script.src = 'webdav-fallback.js';
+            script.onload = () => {
+                if (window.webdavFallback && typeof window.webdavFallback.createClient === 'function') {
+                    log('✅ 备用WebDAV实现加载成功', 'success');
+                    window.webdav = window.webdavFallback;
+                    log('已切换到备用实现', 'info');
+                } else {
+                    log('❌ 备用WebDAV实现加载失败', 'error');
+                }
+            };
+            script.onerror = () => {
+                log('❌ 备用实现文件加载失败', 'error');
+            };
+            document.head.appendChild(script);
+        }
+
+        function testConnection() {
+            if (!window.webdav) {
+                log('❌ WebDAV库未加载，无法测试连接', 'error');
+                return;
+            }
+
+            log('测试WebDAV连接...', 'info');
+            
+            try {
+                const client = window.webdav.createClient('https://webdav-1839857505.pd1.123pan.cn/webdav', {
+                    username: '18867123055',
+                    password: '1x1v8bj1000dbj9o9s1ay9setkp4d8zg',
+                    authType: window.webdav.AuthType.Password
+                });
+                
+                log('✅ WebDAV客户端创建成功', 'success');
+                
+                // 测试连接
+                client.getDirectoryContents('/小鲸鱼')
+                    .then(contents => {
+                        log(`✅ 连接测试成功，找到 ${contents.length} 个项目`, 'success');
+                        log(`目录内容: ${contents.slice(0, 3).map(c => c.basename || c.filename).join(', ')}...`, 'info');
+                    })
+                    .catch(error => {
+                        log(`❌ 连接测试失败: ${error.message}`, 'error');
+                        log(`错误详情: ${JSON.stringify(error, null, 2)}`, 'error');
+                    });
+                    
+            } catch (error) {
+                log(`❌ 创建WebDAV客户端失败: ${error.message}`, 'error');
+            }
+        }
+
+        // 页面加载时的检查
+        window.addEventListener('load', () => {
+            log('页面加载完成，开始检查...', 'info');
+            log(`当前域名: ${window.location.origin}`, 'info');
+            log(`当前路径: ${window.location.pathname}`, 'info');
+            log(`User Agent: ${navigator.userAgent}`, 'info');
+        });
+    </script>
+</body>
+</html>

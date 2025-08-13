@@ -1,0 +1,674 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>增强版WebDAV视频播放器</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            margin: 0;
+            background: #1a1a1a;
+            color: #ffffff;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 20px;
+            background: #2d2d2d;
+            padding: 20px;
+            border-radius: 8px;
+        }
+        .config-section {
+            background: #2d2d2d;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .form-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 15px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            color: #ccc;
+        }
+        .form-group input {
+            width: 100%;
+            padding: 10px;
+            background: #1a1a1a;
+            border: 1px solid #555;
+            color: white;
+            border-radius: 4px;
+        }
+        button {
+            padding: 10px 20px;
+            background: #007bff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover:not(:disabled) {
+            background: #0056b3;
+        }
+        button:disabled {
+            background: #555;
+            cursor: not-allowed;
+        }
+        .main-layout {
+            display: grid;
+            grid-template-columns: 1fr 350px;
+            gap: 20px;
+        }
+        .video-section {
+            background: #2d2d2d;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .video-container {
+            position: relative;
+            background: #000;
+        }
+        video {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+        .video-controls {
+            padding: 15px;
+            background: #2d2d2d;
+        }
+        .progress-container {
+            position: relative;
+            height: 6px;
+            background: #555;
+            border-radius: 3px;
+            margin: 10px 0;
+            cursor: pointer;
+        }
+        .progress-buffer {
+            position: absolute;
+            height: 100%;
+            background: #777;
+            border-radius: 3px;
+            transition: width 0.1s;
+        }
+        .progress-bar {
+            position: absolute;
+            height: 100%;
+            background: #007bff;
+            border-radius: 3px;
+            transition: width 0.1s;
+        }
+        .time-display {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            color: #ccc;
+            margin-top: 5px;
+        }
+        .sidebar {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+        .panel {
+            background: #2d2d2d;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .panel-header {
+            background: #3d3d3d;
+            padding: 10px 15px;
+            font-weight: 500;
+            border-bottom: 1px solid #555;
+        }
+        .panel-content {
+            padding: 15px;
+        }
+        .file-list {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .file-item {
+            padding: 8px 12px;
+            margin-bottom: 4px;
+            background: #1a1a1a;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .file-item:hover {
+            background: #404040;
+        }
+        .file-item.active {
+            background: #007bff;
+        }
+        .file-item.video {
+            border-left: 3px solid #28a745;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        .stat-item {
+            background: #1a1a1a;
+            padding: 10px;
+            border-radius: 4px;
+            text-align: center;
+        }
+        .stat-value {
+            font-size: 18px;
+            font-weight: bold;
+            color: #007bff;
+        }
+        .stat-label {
+            font-size: 12px;
+            color: #ccc;
+            margin-top: 4px;
+        }
+        .log-container {
+            background: #1a1a1a;
+            height: 200px;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            padding: 10px;
+            border-radius: 4px;
+        }
+        .log-entry {
+            margin-bottom: 4px;
+            word-wrap: break-word;
+        }
+        .log-entry.info { color: #17a2b8; }
+        .log-entry.success { color: #28a745; }
+        .log-entry.warning { color: #ffc107; }
+        .log-entry.error { color: #dc3545; }
+        .status-bar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 15px;
+            background: #3d3d3d;
+            border-radius: 0 0 8px 8px;
+            font-size: 12px;
+        }
+        .loading {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border: 2px solid #555;
+            border-top: 2px solid #007bff;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .hidden { display: none !important; }
+        
+        /* 响应式设计 */
+        @media (max-width: 1024px) {
+            .main-layout {
+                grid-template-columns: 1fr;
+            }
+            .stats-grid {
+                grid-template-columns: repeat(4, 1fr);
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎬 增强版WebDAV视频播放器</h1>
+            <p>支持Range请求、智能缓存、实时监控</p>
+        </div>
+
+        <div class="config-section">
+            <div class="form-row">
+                <div class="form-group">
+                    <label>服务器地址:</label>
+                    <input type="text" id="serverUrl" value="http://localhost:8090" />
+                </div>
+                <div class="form-group">
+                    <label>用户名:</label>
+                    <input type="text" id="username" value="18867123055" />
+                </div>
+                <div class="form-group">
+                    <label>密码:</label>
+                    <input type="password" id="password" value="1x1v8bj1000dbj9o9s1ay9setkp4d8zg" />
+                </div>
+                <div class="form-group">
+                    <label>路径:</label>
+                    <input type="text" id="basePath" value="/小鲸鱼" />
+                </div>
+            </div>
+            <button id="connectBtn">连接服务器</button>
+            <button id="refreshBtn" class="hidden">刷新文件</button>
+            <button id="statsBtn" class="hidden">查看统计</button>
+        </div>
+
+        <div class="main-layout">
+            <div class="video-section">
+                <div class="video-container">
+                    <video id="videoPlayer" preload="metadata">
+                        您的浏览器不支持视频播放
+                    </video>
+                </div>
+                <div class="video-controls">
+                    <div class="progress-container" id="progressContainer">
+                        <div class="progress-buffer" id="progressBuffer"></div>
+                        <div class="progress-bar" id="progressBar"></div>
+                    </div>
+                    <div class="time-display">
+                        <span id="currentTime">00:00</span>
+                        <span id="duration">00:00</span>
+                    </div>
+                </div>
+                <div class="status-bar">
+                    <span id="videoStatus">等待选择视频...</span>
+                    <span id="downloadSpeed">0 KB/s</span>
+                </div>
+            </div>
+
+            <div class="sidebar">
+                <div class="panel">
+                    <div class="panel-header">📊 实时统计</div>
+                    <div class="panel-content">
+                        <div class="stats-grid">
+                            <div class="stat-item">
+                                <div class="stat-value" id="cacheHits">0</div>
+                                <div class="stat-label">缓存命中</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-value" id="cacheMisses">0</div>
+                                <div class="stat-label">缓存未命中</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-value" id="hitRate">0%</div>
+                                <div class="stat-label">命中率</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-value" id="cacheSize">0 MB</div>
+                                <div class="stat-label">缓存大小</div>
+                            </div>
+                        </div>
+                        <button onclick="updateStats()">刷新统计</button>
+                    </div>
+                </div>
+
+                <div class="panel">
+                    <div class="panel-header">📁 视频文件</div>
+                    <div class="panel-content">
+                        <div id="fileList" class="file-list">
+                            <div style="text-align: center; color: #666; padding: 20px;">
+                                请先连接服务器
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="panel">
+                    <div class="panel-header">📝 实时日志</div>
+                    <div class="panel-content">
+                        <div id="logContainer" class="log-container"></div>
+                        <button onclick="clearLogs()" style="margin-top: 10px;">清空日志</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 全局变量
+        let isConnected = false;
+        let authHeader = '';
+        let serverUrl = '';
+        let basePath = '';
+        let currentVideo = null;
+        let statsInterval = null;
+
+        // DOM元素
+        const elements = {
+            serverUrl: document.getElementById('serverUrl'),
+            username: document.getElementById('username'),
+            password: document.getElementById('password'),
+            basePath: document.getElementById('basePath'),
+            connectBtn: document.getElementById('connectBtn'),
+            refreshBtn: document.getElementById('refreshBtn'),
+            statsBtn: document.getElementById('statsBtn'),
+            videoPlayer: document.getElementById('videoPlayer'),
+            progressContainer: document.getElementById('progressContainer'),
+            progressBuffer: document.getElementById('progressBuffer'),
+            progressBar: document.getElementById('progressBar'),
+            currentTime: document.getElementById('currentTime'),
+            duration: document.getElementById('duration'),
+            videoStatus: document.getElementById('videoStatus'),
+            downloadSpeed: document.getElementById('downloadSpeed'),
+            fileList: document.getElementById('fileList'),
+            logContainer: document.getElementById('logContainer'),
+            cacheHits: document.getElementById('cacheHits'),
+            cacheMisses: document.getElementById('cacheMisses'),
+            hitRate: document.getElementById('hitRate'),
+            cacheSize: document.getElementById('cacheSize')
+        };
+
+        // 日志记录
+        function addLog(message, type = 'info') {
+            const timestamp = new Date().toLocaleTimeString();
+            const div = document.createElement('div');
+            div.className = `log-entry ${type}`;
+            div.textContent = `[${timestamp}] ${message}`;
+            
+            elements.logContainer.appendChild(div);
+            elements.logContainer.scrollTop = elements.logContainer.scrollHeight;
+            
+            // 限制日志条数
+            while (elements.logContainer.children.length > 100) {
+                elements.logContainer.removeChild(elements.logContainer.firstChild);
+            }
+            
+            console.log(`[${type.toUpperCase()}] ${message}`);
+        }
+
+        // 清空日志
+        function clearLogs() {
+            elements.logContainer.innerHTML = '';
+            addLog('日志已清空', 'info');
+        }
+
+        // 连接服务器
+        async function connectToServer() {
+            try {
+                elements.connectBtn.disabled = true;
+                addLog('正在连接服务器...', 'info');
+
+                serverUrl = elements.serverUrl.value.trim();
+                const username = elements.username.value.trim();
+                const password = elements.password.value;
+                basePath = elements.basePath.value.trim() || '/';
+
+                if (!serverUrl || !username) {
+                    throw new Error('请填写服务器地址和用户名');
+                }
+
+                authHeader = 'Basic ' + btoa(username + ':' + password);
+
+                // 测试连接
+                const response = await fetch(serverUrl + basePath, {
+                    method: 'PROPFIND',
+                    headers: {
+                        'Authorization': authHeader,
+                        'Content-Type': 'application/xml',
+                        'Depth': '1'
+                    },
+                    body: `<?xml version="1.0" encoding="utf-8"?>
+                        <d:propfind xmlns:d="DAV:">
+                            <d:prop>
+                                <d:displayname/>
+                                <d:getcontentlength/>
+                                <d:getcontenttype/>
+                                <d:resourcetype/>
+                            </d:prop>
+                        </d:propfind>`
+                });
+
+                if (!response.ok) {
+                    throw new Error(`连接失败: ${response.status} ${response.statusText}`);
+                }
+
+                const xmlText = await response.text();
+                const files = parseWebDAVResponse(xmlText);
+
+                isConnected = true;
+                elements.refreshBtn.classList.remove('hidden');
+                elements.statsBtn.classList.remove('hidden');
+
+                addLog(`连接成功！找到 ${files.length} 个项目`, 'success');
+                displayFiles(files);
+                
+                // 开始定期更新统计
+                startStatsUpdate();
+
+            } catch (error) {
+                addLog(`连接失败: ${error.message}`, 'error');
+            } finally {
+                elements.connectBtn.disabled = false;
+            }
+        }
+
+        // 解析WebDAV响应
+        function parseWebDAVResponse(xmlText) {
+            const parser = new DOMParser();
+            const xmlDoc = parser.parseFromString(xmlText, 'text/xml');
+            const responses = xmlDoc.querySelectorAll('response');
+            const files = [];
+
+            responses.forEach(response => {
+                const href = response.querySelector('href')?.textContent;
+                if (!href) return;
+
+                const props = response.querySelector('prop');
+                if (!props) return;
+
+                const displayname = props.querySelector('displayname')?.textContent || '';
+                const contentLength = props.querySelector('getcontentlength')?.textContent || '0';
+                const contentType = props.querySelector('getcontenttype')?.textContent || '';
+                const resourceType = props.querySelector('resourcetype');
+                
+                const isCollection = resourceType?.querySelector('collection') !== null;
+                const isVideo = contentType.startsWith('video/') || 
+                               displayname.match(/\.(mp4|avi|mov|mkv|webm|m4v)$/i);
+
+                if (href === serverUrl + basePath || href.endsWith(basePath + '/')) {
+                    return;
+                }
+
+                files.push({
+                    name: displayname || decodeURIComponent(href.split('/').pop()),
+                    href: href,
+                    size: parseInt(contentLength) || 0,
+                    type: contentType,
+                    isDirectory: isCollection,
+                    isVideo: isVideo && !isCollection
+                });
+            });
+
+            return files.sort((a, b) => {
+                if (a.isDirectory !== b.isDirectory) {
+                    return a.isDirectory ? -1 : 1;
+                }
+                return a.name.localeCompare(b.name);
+            });
+        }
+
+        // 显示文件列表
+        function displayFiles(files) {
+            elements.fileList.innerHTML = '';
+
+            const videoFiles = files.filter(f => f.isVideo);
+            if (videoFiles.length === 0) {
+                elements.fileList.innerHTML = '<div style="text-align: center; color: #666; padding: 20px;">未找到视频文件</div>';
+                return;
+            }
+
+            videoFiles.forEach(file => {
+                const div = document.createElement('div');
+                div.className = 'file-item video';
+                div.innerHTML = `
+                    <span>🎬</span>
+                    <div style="flex: 1;">
+                        <div>${file.name}</div>
+                        <div style="font-size: 11px; color: #666;">${formatFileSize(file.size)}</div>
+                    </div>
+                `;
+                
+                div.onclick = () => playVideo(file);
+                elements.fileList.appendChild(div);
+            });
+        }
+
+        // 播放视频
+        async function playVideo(file) {
+            try {
+                addLog(`开始播放: ${file.name}`, 'info');
+                
+                // 移除之前的active状态
+                document.querySelectorAll('.file-item.active').forEach(item => {
+                    item.classList.remove('active');
+                });
+                
+                // 添加当前active状态
+                event.currentTarget.classList.add('active');
+                
+                currentVideo = file;
+                
+                // 构建视频URL
+                let videoPath = file.href;
+                if (videoPath.startsWith('/webdav/')) {
+                    videoPath = videoPath.substring('/webdav'.length);
+                }
+                
+                const videoUrl = serverUrl + videoPath;
+                addLog(`视频URL: ${videoUrl}`, 'info');
+                
+                // 设置视频源
+                elements.videoPlayer.src = videoUrl;
+                elements.videoStatus.textContent = `加载中: ${file.name}`;
+                
+                // 重置进度条
+                elements.progressBar.style.width = '0%';
+                elements.progressBuffer.style.width = '0%';
+                
+            } catch (error) {
+                addLog(`播放失败: ${error.message}`, 'error');
+            }
+        }
+
+        // 更新统计信息
+        async function updateStats() {
+            try {
+                const response = await fetch(serverUrl + '/stats');
+                const stats = await response.json();
+                
+                elements.cacheHits.textContent = stats.hits || 0;
+                elements.cacheMisses.textContent = stats.misses || 0;
+                elements.hitRate.textContent = stats.hitRate + '%' || '0%';
+                elements.cacheSize.textContent = stats.cacheSize || '0 MB';
+                
+            } catch (error) {
+                console.error('获取统计失败:', error);
+            }
+        }
+
+        // 开始定期更新统计
+        function startStatsUpdate() {
+            if (statsInterval) clearInterval(statsInterval);
+            statsInterval = setInterval(updateStats, 2000);
+            updateStats();
+        }
+
+        // 格式化文件大小
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        // 格式化时间
+        function formatTime(seconds) {
+            if (!seconds || isNaN(seconds)) return '00:00';
+            const mins = Math.floor(seconds / 60);
+            const secs = Math.floor(seconds % 60);
+            return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+        }
+
+        // 视频事件监听器
+        elements.videoPlayer.addEventListener('loadedmetadata', () => {
+            elements.duration.textContent = formatTime(elements.videoPlayer.duration);
+            elements.videoStatus.textContent = `已就绪: ${currentVideo?.name || ''}`;
+            addLog('视频元数据已加载', 'success');
+        });
+
+        elements.videoPlayer.addEventListener('timeupdate', () => {
+            const current = elements.videoPlayer.currentTime;
+            const duration = elements.videoPlayer.duration;
+            
+            elements.currentTime.textContent = formatTime(current);
+            
+            if (duration > 0) {
+                const progress = (current / duration) * 100;
+                elements.progressBar.style.width = progress + '%';
+            }
+        });
+
+        elements.videoPlayer.addEventListener('progress', () => {
+            const buffered = elements.videoPlayer.buffered;
+            const duration = elements.videoPlayer.duration;
+            
+            if (buffered.length > 0 && duration > 0) {
+                const bufferedEnd = buffered.end(buffered.length - 1);
+                const bufferProgress = (bufferedEnd / duration) * 100;
+                elements.progressBuffer.style.width = bufferProgress + '%';
+            }
+        });
+
+        elements.videoPlayer.addEventListener('waiting', () => {
+            elements.videoStatus.innerHTML = '缓冲中... <span class="loading"></span>';
+            addLog('视频缓冲中...', 'warning');
+        });
+
+        elements.videoPlayer.addEventListener('playing', () => {
+            elements.videoStatus.textContent = `播放中: ${currentVideo?.name || ''}`;
+            addLog('视频开始播放', 'success');
+        });
+
+        elements.videoPlayer.addEventListener('error', (e) => {
+            const error = elements.videoPlayer.error;
+            elements.videoStatus.textContent = '播放错误';
+            addLog(`播放错误: ${error?.message || '未知错误'}`, 'error');
+        });
+
+        // 进度条点击跳转
+        elements.progressContainer.addEventListener('click', (e) => {
+            const rect = elements.progressContainer.getBoundingClientRect();
+            const percent = (e.clientX - rect.left) / rect.width;
+            const duration = elements.videoPlayer.duration;
+            
+            if (duration > 0) {
+                const seekTime = percent * duration;
+                elements.videoPlayer.currentTime = seekTime;
+                addLog(`跳转到: ${formatTime(seekTime)}`, 'info');
+            }
+        });
+
+        // 事件绑定
+        elements.connectBtn.addEventListener('click', connectToServer);
+        elements.refreshBtn.addEventListener('click', () => {
+            if (isConnected) connectToServer();
+        });
+
+        // 初始化
+        addLog('增强版WebDAV播放器已启动', 'info');
+        addLog('支持Range请求、智能缓存、实时监控', 'info');
+    </script>
+</body>
+</html>

@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebDAV视频播放器 Demo</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>WebDAV视频播放器 Demo</h1>
+            <div class="connection-status" id="connectionStatus">未连接</div>
+        </header>
+
+        <main>
+            <!-- WebDAV连接配置 -->
+            <section class="config-section">
+                <h2>WebDAV服务器配置</h2>
+                <div class="config-form">
+                    <div class="form-group">
+                        <label for="serverUrl">服务器地址:</label>
+                        <input type="url" id="serverUrl" placeholder="https://your-webdav-server.com" />
+                    </div>
+                    <div class="form-group">
+                        <label for="username">用户名:</label>
+                        <input type="text" id="username" placeholder="用户名" />
+                    </div>
+                    <div class="form-group">
+                        <label for="password">密码:</label>
+                        <input type="password" id="password" placeholder="密码" />
+                    </div>
+                    <div class="form-group">
+                        <label for="basePath">基础路径:</label>
+                        <input type="text" id="basePath" placeholder="/videos" value="/" />
+                    </div>
+                    <button id="connectBtn" class="primary-btn">连接</button>
+                    <button id="disconnectBtn" class="secondary-btn" disabled>断开连接</button>
+                </div>
+            </section>
+
+            <!-- 文件浏览器和视频播放器 -->
+            <section class="main-content">
+                <div class="file-browser">
+                    <h3>文件浏览器</h3>
+                    <div class="breadcrumb" id="breadcrumb"></div>
+                    <div class="file-list" id="fileList">
+                        <div class="empty-state">请先连接WebDAV服务器</div>
+                    </div>
+                </div>
+
+                <div class="video-player-section">
+                    <h3>视频播放器</h3>
+                    <div class="video-container">
+                        <video id="videoPlayer" controls preload="metadata">
+                            <p>您的浏览器不支持HTML5视频播放。</p>
+                        </video>
+                        <div class="video-info" id="videoInfo"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 日志面板 -->
+            <section class="logs-section">
+                <div class="logs-header">
+                    <h3>日志信息</h3>
+                    <div class="logs-controls">
+                        <select id="logLevel">
+                            <option value="DEBUG">DEBUG</option>
+                            <option value="INFO" selected>INFO</option>
+                            <option value="WARN">WARN</option>
+                            <option value="ERROR">ERROR</option>
+                        </select>
+                        <button id="clearLogsBtn" class="secondary-btn">清空日志</button>
+                        <button id="exportLogsBtn" class="secondary-btn">导出日志</button>
+                    </div>
+                </div>
+                <div class="logs-container" id="logsContainer"></div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Loading 遮罩 -->
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="loading-spinner"></div>
+        <div class="loading-text">加载中...</div>
+    </div>
+
+    <!-- 引入脚本 -->
+    <script>
+        // WebDAV库加载检查和备用方案
+        function loadWebDAVLibrary() {
+            return new Promise((resolve, reject) => {
+                // 首先尝试本地库文件
+                const script1 = document.createElement('script');
+                script1.src = 'webdav.min.js';
+                script1.onload = () => {
+                    if (window.webdav) {
+                        console.log('WebDAV库从本地文件加载成功');
+                        resolve();
+                    } else {
+                        script1.remove();
+                        tryMainCDN();
+                    }
+                };
+                script1.onerror = () => {
+                    script1.remove();
+                    tryMainCDN();
+                };
+                document.head.appendChild(script1);
+
+                function tryMainCDN() {
+                    console.log('尝试主要CDN...');
+                    const script2 = document.createElement('script');
+                    script2.src = 'https://unpkg.com/webdav@5.3.0/dist/web/index.js';
+                    script2.onload = () => {
+                        if (window.webdav) {
+                            console.log('WebDAV库从主CDN加载成功');
+                            resolve();
+                        } else {
+                            script2.remove();
+                            tryAlternativeCDN();
+                        }
+                    };
+                    script2.onerror = () => {
+                        script2.remove();
+                        tryAlternativeCDN();
+                    };
+                    document.head.appendChild(script2);
+                }
+
+                function tryAlternativeCDN() {
+                    console.log('尝试备用CDN...');
+                    const script2 = document.createElement('script');
+                    script2.src = 'https://cdn.jsdelivr.net/npm/webdav@5.3.0/dist/web/index.js';
+                    script2.onload = () => {
+                        if (window.webdav) {
+                            console.log('WebDAV库从备用CDN加载成功');
+                            resolve();
+                        } else {
+                            script2.remove();
+                            useFallback();
+                        }
+                    };
+                    script2.onerror = () => {
+                        script2.remove();
+                        useFallback();
+                    };
+                    document.head.appendChild(script2);
+                }
+
+                function useFallback() {
+                    console.warn('WebDAV库加载失败，使用备用实现');
+                    // 使用备用WebDAV实现
+                    if (window.webdavFallback) {
+                        window.webdav = window.webdavFallback;
+                        console.log('已切换到备用WebDAV实现');
+                    } else {
+                        // 如果备用实现也不可用，创建错误提示
+                        window.webdav = {
+                            createClient: function(url, options) {
+                                return {
+                                    getDirectoryContents: async function(path) {
+                                        throw new Error('WebDAV库和备用实现都无法加载，请检查网络连接');
+                                    },
+                                    stat: async function(path) {
+                                        throw new Error('WebDAV库和备用实现都无法加载，请检查网络连接');
+                                    }
+                                };
+                            },
+                            AuthType: {
+                                Password: 'password'
+                            }
+                        };
+                        console.error('备用WebDAV实现也不可用');
+                    }
+                    resolve();
+                }
+
+                // 超时处理
+                setTimeout(() => {
+                    if (!window.webdav) {
+                        useFallback();
+                    }
+                }, 10000);
+            });
+        }
+
+        // 加载所有脚本
+        async function loadAllScripts() {
+            try {
+                // 先加载WebDAV库
+                await loadWebDAVLibrary();
+                
+                // 然后按顺序加载其他脚本
+                const scripts = [
+                    'logger.js',
+                    'webdav-fallback.js',
+                    'webdav-client.js', 
+                    'video-player.js',
+                    'app.js'
+                ];
+
+                for (const scriptSrc of scripts) {
+                    await new Promise((resolve, reject) => {
+                        const script = document.createElement('script');
+                        script.src = scriptSrc;
+                        script.onload = resolve;
+                        script.onerror = () => reject(new Error(`Failed to load ${scriptSrc}`));
+                        document.head.appendChild(script);
+                    });
+                }
+                
+                console.log('所有脚本加载完成');
+            } catch (error) {
+                console.error('脚本加载失败:', error);
+                alert('应用加载失败: ' + error.message + '\n\n请检查网络连接或刷新页面重试。');
+            }
+        }
+
+        // 页面加载完成后开始加载脚本
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', loadAllScripts);
+        } else {
+            loadAllScripts();
+        }
+    </script>
+</body>
+</html>

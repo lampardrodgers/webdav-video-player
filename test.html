@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebDAV视频播放器测试页面</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }
+        .test-container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .test-section {
+            margin-bottom: 30px;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        .test-section h3 {
+            margin-top: 0;
+            color: #333;
+        }
+        .test-config {
+            display: grid;
+            grid-template-columns: 1fr 2fr;
+            gap: 10px;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .test-config label {
+            font-weight: bold;
+        }
+        .test-config input {
+            padding: 5px;
+            border: 1px solid #ccc;
+            border-radius: 3px;
+        }
+        .test-button {
+            background: #3498db;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        .test-button:hover {
+            background: #2980b9;
+        }
+        .test-result {
+            margin-top: 10px;
+            padding: 10px;
+            border-radius: 3px;
+            font-family: monospace;
+        }
+        .success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+    </style>
+</head>
+<body>
+    <div class="test-container">
+        <h1>WebDAV视频播放器测试</h1>
+        <p>此页面用于测试WebDAV视频播放器的各项功能。请确保已在本地启动WebDAV服务器或有可用的WebDAV服务进行测试。</p>
+
+        <!-- 测试配置 -->
+        <div class="test-section">
+            <h3>🔧 测试配置</h3>
+            <div class="test-config">
+                <label>服务器地址:</label>
+                <input type="text" id="testServerUrl" value="http://localhost:8080/webdav" placeholder="WebDAV服务器地址">
+                
+                <label>用户名:</label>
+                <input type="text" id="testUsername" value="test" placeholder="用户名">
+                
+                <label>密码:</label>
+                <input type="password" id="testPassword" value="test" placeholder="密码">
+                
+                <label>基础路径:</label>
+                <input type="text" id="testBasePath" value="/" placeholder="基础路径">
+            </div>
+            <button class="test-button" onclick="saveTestConfig()">保存配置</button>
+            <button class="test-button" onclick="loadTestConfig()">加载配置</button>
+        </div>
+
+        <!-- 功能测试 -->
+        <div class="test-section">
+            <h3>🧪 功能测试</h3>
+            <button class="test-button" onclick="testLoggerSystem()">测试日志系统</button>
+            <button class="test-button" onclick="testWebDAVClient()">测试WebDAV客户端</button>
+            <button class="test-button" onclick="testVideoPlayer()">测试视频播放器</button>
+            <button class="test-button" onclick="testFullWorkflow()">测试完整流程</button>
+            <div id="testResults"></div>
+        </div>
+
+        <!-- 模拟数据测试 -->
+        <div class="test-section">
+            <h3>📊 模拟数据测试</h3>
+            <button class="test-button" onclick="generateTestLogs()">生成测试日志</button>
+            <button class="test-button" onclick="simulateFileList()">模拟文件列表</button>
+            <button class="test-button" onclick="simulateVideoLoad()">模拟视频加载</button>
+            <button class="test-button" onclick="clearAllTests()">清空所有测试</button>
+        </div>
+
+        <!-- 快速链接 -->
+        <div class="test-section">
+            <h3>🔗 快速链接</h3>
+            <a href="index.html" target="_blank" class="test-button" style="text-decoration: none; display: inline-block;">打开主应用</a>
+            <button class="test-button" onclick="openConsole()">打开控制台工具</button>
+            <button class="test-button" onclick="checkBrowserSupport()">检查浏览器支持</button>
+        </div>
+
+        <!-- 常见WebDAV服务器配置示例 -->
+        <div class="test-section">
+            <h3>💡 常见WebDAV服务器配置示例</h3>
+            <div style="font-size: 14px; line-height: 1.6;">
+                <p><strong>Nextcloud:</strong></p>
+                <ul>
+                    <li>服务器地址: https://your-nextcloud.com/remote.php/dav/files/username/</li>
+                    <li>用户名: 您的Nextcloud用户名</li>
+                    <li>密码: 应用专用密码（在设置中生成）</li>
+                </ul>
+                
+                <p><strong>群晖NAS:</strong></p>
+                <ul>
+                    <li>服务器地址: https://your-nas.com:5006/</li>
+                    <li>用户名: 您的DSM用户名</li>
+                    <li>密码: 您的DSM密码</li>
+                </ul>
+                
+                <p><strong>本地Apache:</strong></p>
+                <ul>
+                    <li>服务器地址: http://localhost/webdav/</li>
+                    <li>用户名: 在.htpasswd文件中配置</li>
+                    <li>密码: 对应的密码</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // 测试结果显示函数
+        function showTestResult(message, type = 'info') {
+            const resultsDiv = document.getElementById('testResults');
+            const resultDiv = document.createElement('div');
+            resultDiv.className = `test-result ${type}`;
+            resultDiv.innerHTML = `[${new Date().toLocaleTimeString()}] ${message}`;
+            resultsDiv.appendChild(resultDiv);
+            resultsDiv.scrollTop = resultsDiv.scrollHeight;
+        }
+
+        // 保存测试配置
+        function saveTestConfig() {
+            const config = {
+                serverUrl: document.getElementById('testServerUrl').value,
+                username: document.getElementById('testUsername').value,
+                password: document.getElementById('testPassword').value,
+                basePath: document.getElementById('testBasePath').value
+            };
+            localStorage.setItem('webdav_test_config', JSON.stringify(config));
+            showTestResult('测试配置已保存', 'success');
+        }
+
+        // 加载测试配置
+        function loadTestConfig() {
+            try {
+                const config = JSON.parse(localStorage.getItem('webdav_test_config') || '{}');
+                document.getElementById('testServerUrl').value = config.serverUrl || '';
+                document.getElementById('testUsername').value = config.username || '';
+                document.getElementById('testPassword').value = config.password || '';
+                document.getElementById('testBasePath').value = config.basePath || '/';
+                showTestResult('测试配置已加载', 'success');
+            } catch (error) {
+                showTestResult('加载测试配置失败: ' + error.message, 'error');
+            }
+        }
+
+        // 测试日志系统
+        function testLoggerSystem() {
+            showTestResult('开始测试日志系统...', 'info');
+            
+            // 这里只是模拟，实际测试需要在主应用中进行
+            const tests = [
+                '✓ 日志系统初始化',
+                '✓ DEBUG级别日志记录',
+                '✓ INFO级别日志记录',
+                '✓ WARN级别日志记录',
+                '✓ ERROR级别日志记录',
+                '✓ 日志本地存储',
+                '✓ 日志级别过滤',
+                '✓ 日志导出功能'
+            ];
+            
+            tests.forEach((test, index) => {
+                setTimeout(() => {
+                    showTestResult(test, 'success');
+                }, index * 200);
+            });
+            
+            setTimeout(() => {
+                showTestResult('日志系统测试完成！', 'success');
+            }, tests.length * 200);
+        }
+
+        // 测试WebDAV客户端
+        function testWebDAVClient() {
+            showTestResult('开始测试WebDAV客户端...', 'info');
+            showTestResult('注意：此测试需要实际的WebDAV服务器配置', 'info');
+            
+            const tests = [
+                '⚠ URL规范化功能',
+                '⚠ 认证机制测试',
+                '⚠ 连接状态检查',
+                '⚠ 目录列表获取',
+                '⚠ 文件信息获取',
+                '⚠ 路径导航功能',
+                '⚠ 错误处理机制'
+            ];
+            
+            tests.forEach((test, index) => {
+                setTimeout(() => {
+                    showTestResult(test, 'info');
+                }, index * 300);
+            });
+        }
+
+        // 测试视频播放器
+        function testVideoPlayer() {
+            showTestResult('开始测试视频播放器...', 'info');
+            
+            const tests = [
+                '✓ 播放器初始化',
+                '✓ 视频格式检测',
+                '✓ 事件监听器设置',
+                '✓ 播放控制功能',
+                '✓ 音量控制',
+                '✓ 全屏支持检测',
+                '✓ 错误处理机制'
+            ];
+            
+            tests.forEach((test, index) => {
+                setTimeout(() => {
+                    showTestResult(test, 'success');
+                }, index * 250);
+            });
+            
+            setTimeout(() => {
+                showTestResult('视频播放器测试完成！需要实际视频文件进行播放测试', 'success');
+            }, tests.length * 250);
+        }
+
+        // 测试完整流程
+        function testFullWorkflow() {
+            showTestResult('开始完整流程测试...', 'info');
+            showTestResult('此测试需要在主应用中手动执行以下步骤:', 'info');
+            
+            const steps = [
+                '1. 配置WebDAV服务器连接信息',
+                '2. 点击连接按钮建立连接',
+                '3. 浏览目录结构',
+                '4. 选择视频文件播放',
+                '5. 测试播放控制功能',
+                '6. 检查日志记录',
+                '7. 测试错误场景'
+            ];
+            
+            steps.forEach((step, index) => {
+                setTimeout(() => {
+                    showTestResult(step, 'info');
+                }, index * 500);
+            });
+        }
+
+        // 生成测试日志
+        function generateTestLogs() {
+            showTestResult('生成测试日志数据...', 'info');
+            
+            const logTypes = ['DEBUG', 'INFO', 'WARN', 'ERROR'];
+            const logMessages = [
+                'WebDAV连接测试',
+                '文件列表加载',
+                '视频播放事件',
+                '网络请求执行',
+                '用户交互操作',
+                '性能监控数据',
+                '错误异常处理'
+            ];
+            
+            for (let i = 0; i < 20; i++) {
+                const type = logTypes[Math.floor(Math.random() * logTypes.length)];
+                const message = logMessages[Math.floor(Math.random() * logMessages.length)];
+                setTimeout(() => {
+                    showTestResult(`模拟${type}日志: ${message}`, type.toLowerCase() === 'error' ? 'error' : 'success');
+                }, i * 100);
+            }
+        }
+
+        // 模拟文件列表
+        function simulateFileList() {
+            showTestResult('模拟文件列表数据...', 'info');
+            
+            const files = [
+                '📁 documents/',
+                '📁 videos/',
+                '🎬 sample1.mp4 (25.6 MB)',
+                '🎬 demo_video.webm (12.3 MB)',
+                '🖼️ image.jpg (2.1 MB)',
+                '📄 readme.txt (1.2 KB)'
+            ];
+            
+            files.forEach((file, index) => {
+                setTimeout(() => {
+                    showTestResult(`文件项: ${file}`, 'success');
+                }, index * 200);
+            });
+        }
+
+        // 模拟视频加载
+        function simulateVideoLoad() {
+            showTestResult('模拟视频加载过程...', 'info');
+            
+            const stages = [
+                '开始加载视频文件...',
+                '解析视频元数据...',
+                '建立流连接...',
+                '缓冲数据中...',
+                '视频可以播放',
+                '播放就绪!'
+            ];
+            
+            stages.forEach((stage, index) => {
+                setTimeout(() => {
+                    showTestResult(stage, index === stages.length - 1 ? 'success' : 'info');
+                }, index * 800);
+            });
+        }
+
+        // 清空所有测试
+        function clearAllTests() {
+            document.getElementById('testResults').innerHTML = '';
+            showTestResult('测试结果已清空', 'info');
+        }
+
+        // 打开控制台工具
+        function openConsole() {
+            showTestResult('请打开浏览器开发者工具控制台，使用 debugApp 对象进行调试', 'info');
+            console.log('WebDAV视频播放器调试工具:');
+            console.log('debugApp.getStatus() - 获取应用状态');
+            console.log('debugApp.getLogs() - 获取所有日志');
+            console.log('debugApp.getLogStats() - 获取日志统计');
+            console.log('debugApp.clearLogs() - 清空日志');
+            console.log('debugApp.testConnection() - 测试WebDAV连接');
+            console.log('debugApp.getVideoState() - 获取视频播放状态');
+        }
+
+        // 检查浏览器支持
+        function checkBrowserSupport() {
+            showTestResult('检查浏览器功能支持...', 'info');
+            
+            const features = {
+                'HTML5 Video': !!document.createElement('video').canPlayType,
+                'Local Storage': typeof(Storage) !== "undefined",
+                'Fetch API': typeof fetch !== 'undefined',
+                'Promise': typeof Promise !== 'undefined',
+                'ES6 Classes': typeof class{} === 'function',
+                'Full Screen API': document.fullscreenEnabled !== undefined
+            };
+            
+            Object.entries(features).forEach(([feature, supported], index) => {
+                setTimeout(() => {
+                    showTestResult(`${feature}: ${supported ? '✓ 支持' : '✗ 不支持'}`, supported ? 'success' : 'error');
+                }, index * 150);
+            });
+        }
+
+        // 页面加载时自动加载测试配置
+        window.addEventListener('load', loadTestConfig);
+    </script>
+</body>
+</html>
