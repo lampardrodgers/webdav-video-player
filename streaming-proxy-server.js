@@ -27,6 +27,69 @@ const globalStats = {
     startTime: Date.now()
 };
 
+// 缓存系统
+const cacheSystem = {
+    // 文件元数据缓存 (HEAD请求结果)
+    metadata: new Map(),
+    // 重定向URL缓存
+    redirects: new Map(),
+    // 连接池
+    agents: new Map(),
+    // 预加载缓存
+    preloadCache: new Map(),
+    
+    // 缓存配置
+    METADATA_TTL: 5 * 60 * 1000, // 5分钟
+    REDIRECT_TTL: 10 * 60 * 1000, // 10分钟
+    PRELOAD_TTL: 2 * 60 * 1000, // 2分钟
+    
+    // 清理过期缓存
+    cleanup() {
+        const now = Date.now();
+        
+        // 清理过期的元数据缓存
+        for (const [key, entry] of this.metadata.entries()) {
+            if (now - entry.timestamp > this.METADATA_TTL) {
+                this.metadata.delete(key);
+            }
+        }
+        
+        // 清理过期的重定向缓存
+        for (const [key, entry] of this.redirects.entries()) {
+            if (now - entry.timestamp > this.REDIRECT_TTL) {
+                this.redirects.delete(key);
+            }
+        }
+        
+        // 清理过期的预加载缓存
+        for (const [key, entry] of this.preloadCache.entries()) {
+            if (now - entry.timestamp > this.PRELOAD_TTL) {
+                this.preloadCache.delete(key);
+            }
+        }
+    },
+    
+    // 获取或创建连接Agent
+    getAgent(protocol) {
+        if (!this.agents.has(protocol)) {
+            const Agent = protocol === 'https:' ? require('https').Agent : require('http').Agent;
+            this.agents.set(protocol, new Agent({
+                keepAlive: true,
+                keepAliveMsecs: 30000,
+                maxSockets: 10,
+                maxFreeSockets: 5,
+                timeout: 30000
+            }));
+        }
+        return this.agents.get(protocol);
+    }
+};
+
+// 定期清理缓存
+setInterval(() => {
+    cacheSystem.cleanup();
+}, 60000); // 每分钟清理一次
+
 // 生成请求ID
 function generateRequestId() {
     return `REQ_${++requestCounter}_${Date.now().toString(36)}`;
@@ -78,6 +141,42 @@ function updateTransferStats(bytes) {
     }
 }
 
+// 缓存辅助函数
+function getCachedMetadata(url) {
+    const entry = cacheSystem.metadata.get(url);
+    if (entry && (Date.now() - entry.timestamp < cacheSystem.METADATA_TTL)) {
+        return entry.data;
+    }
+    return null;
+}
+
+function setCachedMetadata(url, headers) {
+    cacheSystem.metadata.set(url, {
+        data: {
+            'content-length': headers['content-length'],
+            'content-type': headers['content-type'],
+            'last-modified': headers['last-modified'],
+            'etag': headers['etag']
+        },
+        timestamp: Date.now()
+    });
+}
+
+function getCachedRedirect(url) {
+    const entry = cacheSystem.redirects.get(url);
+    if (entry && (Date.now() - entry.timestamp < cacheSystem.REDIRECT_TTL)) {
+        return entry.data;
+    }
+    return null;
+}
+
+function setCachedRedirect(originalUrl, redirectUrl) {
+    cacheSystem.redirects.set(originalUrl, {
+        data: redirectUrl,
+        timestamp: Date.now()
+    });
+}
+
 // 获取统计信息
 function getGlobalStats() {
     return {
@@ -85,7 +184,12 @@ function getGlobalStats() {
         activeRequests: activeRequests.size,
         uptime: Date.now() - globalStats.startTime,
         formattedSpeed: formatBytes(globalStats.currentSpeed) + '/s',
-        formattedTotal: formatBytes(globalStats.totalBytesTransferred)
+        formattedTotal: formatBytes(globalStats.totalBytesTransferred),
+        cache: {
+            metadataEntries: cacheSystem.metadata.size,
+            redirectEntries: cacheSystem.redirects.size,
+            agentCount: cacheSystem.agents.size
+        }
     };
 }
 
@@ -98,7 +202,7 @@ const CORS_HEADERS = {
     'Access-Control-Allow-Credentials': 'true'
 };
 
-// Range请求解析 - 改进版，支持多种格式
+// Range请求解析 - 改进版，支持多种格式和智能合并
 function parseRange(rangeHeader, totalSize) {
     if (!rangeHeader || !rangeHeader.startsWith('bytes=')) {
         return null;
@@ -112,21 +216,68 @@ function parseRange(rangeHeader, totalSize) {
     // bytes=1024-     (从某位置到文件末尾)
     // bytes=-1024     (文件最后1024字节)
     
+    let parsedRange;
+    
     if (range.startsWith('-')) {
         // 处理 bytes=-1024 格式（后缀范围）
         const suffixLength = parseInt(range.substring(1));
-        return {
+        parsedRange = {
             start: Math.max(0, totalSize - suffixLength),
             end: totalSize - 1
         };
+    } else {
+        const [start, end] = range.split('-');
+        parsedRange = {
+            start: start ? parseInt(start) : 0,
+            end: end !== '' ? parseInt(end) : totalSize - 1
+        };
     }
     
-    const [start, end] = range.split('-');
+    // 优化小范围请求：增加预缓冲策略以提升播放流畅性
+    const requestSize = parsedRange.end - parsedRange.start + 1;
+    const MIN_CHUNK_SIZE = 5 * 1024 * 1024; // 5MB - 增加最小块大小
+    const OPTIMAL_CHUNK_SIZE = 10 * 1024 * 1024; // 10MB - 增加最优块大小
     
-    return {
-        start: start ? parseInt(start) : 0,
-        end: end !== '' ? parseInt(end) : totalSize - 1
-    };
+    // 对小于5MB的请求进行优化
+    if (requestSize < MIN_CHUNK_SIZE) {
+        // 扩展范围以获得更好的缓存效率和播放流畅性
+        const expandedEnd = Math.min(
+            parsedRange.start + OPTIMAL_CHUNK_SIZE - 1,
+            totalSize - 1
+        );
+        
+        log('RANGE_OPT', 'info', 
+            `小范围请求优化(提升播放流畅性): ${formatBytes(requestSize)} -> ${formatBytes(expandedEnd - parsedRange.start + 1)}`);
+        
+        return {
+            start: parsedRange.start,
+            end: expandedEnd,
+            originalEnd: parsedRange.end, // 保存原始请求范围
+            optimized: true
+        };
+    }
+    
+    // 对中等大小的请求（5-20MB）也进行适度优化
+    if (requestSize < 20 * 1024 * 1024) {
+        const expandedEnd = Math.min(
+            parsedRange.start + Math.max(requestSize * 1.5, OPTIMAL_CHUNK_SIZE) - 1,
+            totalSize - 1
+        );
+        
+        if (expandedEnd > parsedRange.end) {
+            log('RANGE_OPT', 'info', 
+                `中等范围请求优化: ${formatBytes(requestSize)} -> ${formatBytes(expandedEnd - parsedRange.start + 1)}`);
+            
+            return {
+                start: parsedRange.start,
+                end: expandedEnd,
+                originalEnd: parsedRange.end,
+                optimized: true
+            };
+        }
+    }
+    
+    return parsedRange;
 }
 
 // 创建流式代理服务器
@@ -153,6 +304,13 @@ function createStreamingProxyServer() {
             });
             res.end(JSON.stringify(getGlobalStats()));
             log(requestId, 'debug', '统计API请求完成');
+            activeRequests.delete(requestId);
+            return;
+        }
+
+        // 处理预加载API请求
+        if (req.url.startsWith('/api/preload')) {
+            await handlePreloadRequest(req, res, requestId);
             activeRequests.delete(requestId);
             return;
         }
@@ -212,12 +370,25 @@ async function handleStreamingRangeRequest(req, res, targetUrl, requestId) {
     
     log(requestId, 'debug', `Range头: ${rangeHeader}`);
     
-    // 首先获取文件总大小
-    log(requestId, 'debug', '发起HEAD请求获取文件大小');
-    const headResponse = await makeRequest('HEAD', targetUrl, req.headers);
-    const totalSize = parseInt(headResponse.headers['content-length'] || '0');
+    // 优化1: 检查缓存的元数据
+    let cachedMetadata = getCachedMetadata(targetUrl);
+    let totalSize;
     
-    log(requestId, 'debug', `HEAD响应状态: ${headResponse.statusCode}, Content-Length: ${headResponse.headers['content-length']}`);
+    if (cachedMetadata) {
+        totalSize = parseInt(cachedMetadata['content-length'] || '0');
+        log(requestId, 'info', `使用缓存元数据: ${totalSize} bytes (节省HEAD请求)`);
+    } else {
+        // 缓存未命中，发起HEAD请求
+        log(requestId, 'debug', '发起HEAD请求获取文件大小');
+        const headResponse = await makeRequest('HEAD', targetUrl, req.headers);
+        totalSize = parseInt(headResponse.headers['content-length'] || '0');
+        
+        log(requestId, 'debug', `HEAD响应状态: ${headResponse.statusCode}, Content-Length: ${headResponse.headers['content-length']}`);
+        
+        // 缓存元数据
+        setCachedMetadata(targetUrl, headResponse.headers);
+        log(requestId, 'debug', '元数据已缓存');
+    }
     
     if (totalSize === 0) {
         throw new Error('无法获取文件大小：Content-Length为0或未定义');
@@ -244,49 +415,111 @@ async function handleStreamingRangeRequest(req, res, targetUrl, requestId) {
     delete rangeHeaders['referer'];
 
     try {
-        log(requestId, 'debug', '向上游发起Range请求');
-        const response = await makeRequest('GET', targetUrl, rangeHeaders);
+        // 优化2: 检查缓存的重定向URL
+        let cachedRedirect = getCachedRedirect(targetUrl);
+        let response;
         
-        log(requestId, 'info', `上游响应状态: ${response.statusCode}`);
+        if (cachedRedirect) {
+            log(requestId, 'info', `使用缓存的重定向URL (节省302跳转)`);
+            // 直接向CDN发起请求
+            await handleRedirectRange(cachedRedirect, range, totalSize, res, requestId);
+            return;
+        } else {
+            log(requestId, 'debug', '向上游发起Range请求');
+            response = await makeRequest('GET', targetUrl, rangeHeaders);
+            log(requestId, 'info', `上游响应状态: ${response.statusCode}`);
+        }
         
         // 如果上游支持Range且返回206
         if (response.statusCode === 206) {
             log(requestId, 'info', '上游服务器支持Range请求，直接流式传输');
             
-            // 设置Range响应头
-            const responseHeaders = {
-                ...CORS_HEADERS,
-                'Content-Range': response.headers['content-range'],
-                'Content-Length': response.headers['content-length'],
-                'Accept-Ranges': 'bytes',
-                'Content-Type': response.headers['content-type'] || 'video/mp4'
-            };
+            // 如果范围被优化过，需要截取原始请求的部分
+            if (range.optimized && range.originalEnd) {
+                log(requestId, 'info', '处理优化范围，截取原始请求部分');
+                
+                const originalSize = range.originalEnd - range.start + 1;
+                const responseHeaders = {
+                    ...CORS_HEADERS,
+                    'Content-Range': `bytes ${range.start}-${range.originalEnd}/${totalSize}`,
+                    'Content-Length': originalSize.toString(),
+                    'Accept-Ranges': 'bytes',
+                    'Content-Type': response.headers['content-type'] || 'video/mp4'
+                };
 
-            res.writeHead(206, responseHeaders);
-            
-            // 关键：直接管道传输，不缓冲 - 添加传输监控
-            let transferredBytes = 0;
-            response.on('data', (chunk) => {
-                transferredBytes += chunk.length;
-                updateTransferStats(chunk.length); // 更新全局统计
-                if (transferredBytes % (1024 * 1024) < chunk.length) {
-                    log(requestId, 'debug', `传输进度: ${formatBytes(transferredBytes)}/${formatBytes(rangeSize)}`);
-                }
-            });
-            
-            response.pipe(res);
-            
-            response.on('end', () => {
-                log(requestId, 'info', `Range流式传输完成: ${formatBytes(transferredBytes)}`);
-            });
-            
-            response.on('error', (error) => {
-                log(requestId, 'error', `流式传输错误: ${error.message}`);
-                if (!res.headersSent) {
-                    res.writeHead(500, CORS_HEADERS);
-                }
-                res.end();
-            });
+                res.writeHead(206, responseHeaders);
+                
+                let transferredBytes = 0;
+                
+                response.on('data', (chunk) => {
+                    // 只发送原始请求需要的部分
+                    if (transferredBytes + chunk.length <= originalSize) {
+                        // 整个chunk都需要
+                        res.write(chunk);
+                        transferredBytes += chunk.length;
+                        updateTransferStats(chunk.length);
+                    } else if (transferredBytes < originalSize) {
+                        // 只需要chunk的一部分
+                        const neededBytes = originalSize - transferredBytes;
+                        const partialChunk = chunk.slice(0, neededBytes);
+                        res.write(partialChunk);
+                        transferredBytes += partialChunk.length;
+                        updateTransferStats(partialChunk.length);
+                    }
+                    
+                    // 如果已经发送完原始请求的数据，结束响应
+                    if (transferredBytes >= originalSize) {
+                        response.destroy(); // 停止接收更多数据
+                        res.end();
+                        log(requestId, 'info', `优化Range传输完成: ${formatBytes(transferredBytes)}`);
+                        return;
+                    }
+                });
+                
+                response.on('error', (error) => {
+                    log(requestId, 'error', `优化传输错误: ${error.message}`);
+                    if (!res.headersSent) {
+                        res.writeHead(500, CORS_HEADERS);
+                    }
+                    res.end();
+                });
+                
+            } else {
+                // 标准Range请求处理
+                const responseHeaders = {
+                    ...CORS_HEADERS,
+                    'Content-Range': response.headers['content-range'],
+                    'Content-Length': response.headers['content-length'],
+                    'Accept-Ranges': 'bytes',
+                    'Content-Type': response.headers['content-type'] || 'video/mp4'
+                };
+
+                res.writeHead(206, responseHeaders);
+                
+                // 关键：直接管道传输，不缓冲 - 添加传输监控
+                let transferredBytes = 0;
+                response.on('data', (chunk) => {
+                    transferredBytes += chunk.length;
+                    updateTransferStats(chunk.length); // 更新全局统计
+                    if (transferredBytes % (1024 * 1024) < chunk.length) {
+                        log(requestId, 'debug', `传输进度: ${formatBytes(transferredBytes)}/${formatBytes(rangeSize)}`);
+                    }
+                });
+                
+                response.pipe(res);
+                
+                response.on('end', () => {
+                    log(requestId, 'info', `Range流式传输完成: ${formatBytes(transferredBytes)}`);
+                });
+                
+                response.on('error', (error) => {
+                    log(requestId, 'error', `流式传输错误: ${error.message}`);
+                    if (!res.headersSent) {
+                        res.writeHead(500, CORS_HEADERS);
+                    }
+                    res.end();
+                });
+            }
             
         } else if (response.statusCode === 302 || response.statusCode === 301) {
             // 处理重定向
@@ -296,6 +529,10 @@ async function handleStreamingRangeRequest(req, res, targetUrl, requestId) {
             if (!redirectUrl) {
                 throw new Error('重定向但未提供location头');
             }
+            
+            // 缓存重定向URL
+            setCachedRedirect(targetUrl, redirectUrl);
+            log(requestId, 'debug', '重定向URL已缓存');
             
             // 向重定向URL发起流式Range请求
             await handleRedirectRange(redirectUrl, range, totalSize, res, requestId);
@@ -335,12 +572,14 @@ async function handleRedirectRange(redirectUrl, range, totalSize, res, requestId
         const parsedUrl = url.parse(redirectUrl);
         const isHttps = parsedUrl.protocol === 'https:';
         const httpModule = isHttps ? https : require('http');
+        const agent = cacheSystem.getAgent(parsedUrl.protocol);
         
         const options = {
             hostname: parsedUrl.hostname,
             port: parsedUrl.port || (isHttps ? 443 : 80),
             path: parsedUrl.path,
             method: 'GET',
+            agent,
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                 'Range': `bytes=${range.start}-${range.end}`
@@ -463,12 +702,14 @@ async function handleRedirectRange(redirectUrl, range, totalSize, res, requestId
 async function handleStreamingPartialDownload(req, res, targetUrl, range, totalSize, requestId) {
     return new Promise((resolve, reject) => {
         const parsedUrl = url.parse(targetUrl);
+        const agent = cacheSystem.getAgent(parsedUrl.protocol);
         
         const options = {
             hostname: parsedUrl.hostname,
             port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
             path: parsedUrl.path,
             method: 'GET',
+            agent,
             headers: {
                 ...req.headers,
                 host: TARGET_HOST
@@ -626,11 +867,15 @@ async function handleRegularRequest(req, res, targetUrl, requestId) {
     req.pipe(proxyReq);
 }
 
-// 辅助函数：发起HTTP请求
+// 辅助函数：发起HTTP请求（使用连接池优化）
 function makeRequest(method, url, headers) {
     return new Promise((resolve, reject) => {
+        const parsedUrl = require('url').parse(url);
+        const agent = cacheSystem.getAgent(parsedUrl.protocol);
+        
         const options = {
             method,
+            agent,
             headers: {
                 ...headers,
                 host: TARGET_HOST
@@ -665,7 +910,7 @@ function startStreamingServer() {
     const server = createStreamingProxyServer();
     
     server.listen(PROXY_PORT, () => {
-        console.log('🚀 流式WebDAV代理服务器已启动');
+        console.log('🚀 优化版流式WebDAV代理服务器已启动');
         console.log(`📍 监听端口: ${PROXY_PORT}`);
         console.log(`🎯 目标服务器: https://${TARGET_HOST}${TARGET_PATH}`);
         console.log(`🌐 本地访问地址: http://localhost:${PROXY_PORT}`);
@@ -673,8 +918,19 @@ function startStreamingServer() {
         console.log('✨ 核心功能:');
         console.log('  - 真正的流式传输 (边下载边播放)');
         console.log('  - Range请求支持 (视频快进/跳转)');
-        console.log('  - 302重定向处理');
+        console.log('  - 302重定向处理和缓存');
         console.log('  - 实时数据传输 (无缓冲)');
+        console.log('');
+        console.log('🚀 性能优化:');
+        console.log('  - 文件元数据缓存 (5分钟)');
+        console.log('  - 重定向URL缓存 (10分钟)');
+        console.log('  - HTTP连接池复用');
+        console.log('  - 智能Range请求合并');
+        console.log('  - 预加载API支持');
+        console.log('');
+        console.log('📊 API端点:');
+        console.log('  - GET /api/stats (实时统计)');
+        console.log('  - GET /api/preload?path=...&start=...&size=... (预加载)');
         console.log('');
         console.log('⚠️  停止服务器: 按 Ctrl+C');
         console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
@@ -690,6 +946,168 @@ function startStreamingServer() {
     });
 
     return server;
+}
+
+// 处理预加载请求
+async function handlePreloadRequest(req, res, requestId) {
+    try {
+        const urlParams = new URL(req.url, `http://localhost:${PROXY_PORT}`);
+        const targetPath = urlParams.searchParams.get('path');
+        const startByte = parseInt(urlParams.searchParams.get('start') || '0');
+        const size = parseInt(urlParams.searchParams.get('size') || '2097152'); // 默认2MB
+        
+        if (!targetPath) {
+            res.writeHead(400, CORS_HEADERS);
+            res.end(JSON.stringify({ error: '缺少path参数' }));
+            return;
+        }
+        
+        const targetUrl = `https://${TARGET_HOST}${TARGET_PATH}${targetPath}`;
+        const cacheKey = `${targetPath}:${startByte}:${size}`;
+        
+        // 检查预加载缓存
+        const cached = cacheSystem.preloadCache.get(cacheKey);
+        if (cached && (Date.now() - cached.timestamp < cacheSystem.PRELOAD_TTL)) {
+            log(requestId, 'info', `预加载缓存命中: ${cacheKey}`);
+            res.writeHead(200, {
+                ...CORS_HEADERS,
+                'Content-Type': 'application/json'
+            });
+            res.end(JSON.stringify({ 
+                status: 'cached',
+                size: cached.data.length,
+                timestamp: cached.timestamp
+            }));
+            return;
+        }
+        
+        log(requestId, 'info', `开始预加载: ${targetPath} [${startByte}:${startByte + size - 1}]`);
+        
+        // 获取文件元数据
+        let totalSize;
+        const cachedMetadata = getCachedMetadata(targetUrl);
+        if (cachedMetadata) {
+            totalSize = parseInt(cachedMetadata['content-length'] || '0');
+        } else {
+            const headResponse = await makeRequest('HEAD', targetUrl, { host: TARGET_HOST });
+            totalSize = parseInt(headResponse.headers['content-length'] || '0');
+            setCachedMetadata(targetUrl, headResponse.headers);
+        }
+        
+        const endByte = Math.min(startByte + size - 1, totalSize - 1);
+        
+        // 检查缓存的重定向
+        let redirectUrl = getCachedRedirect(targetUrl);
+        if (!redirectUrl) {
+            // 发起请求获取重定向
+            const response = await makeRequest('GET', targetUrl, {
+                host: TARGET_HOST,
+                Range: `bytes=${startByte}-${endByte}`
+            });
+            
+            if (response.statusCode === 302 || response.statusCode === 301) {
+                redirectUrl = response.headers.location;
+                setCachedRedirect(targetUrl, redirectUrl);
+            }
+        }
+        
+        // 预加载数据
+        if (redirectUrl) {
+            await preloadFromCDN(redirectUrl, startByte, endByte, cacheKey, requestId);
+        } else {
+            await preloadFromUpstream(targetUrl, startByte, endByte, cacheKey, requestId);
+        }
+        
+        res.writeHead(200, {
+            ...CORS_HEADERS,
+            'Content-Type': 'application/json'
+        });
+        res.end(JSON.stringify({ 
+            status: 'preloaded',
+            range: `${startByte}-${endByte}`,
+            size: endByte - startByte + 1
+        }));
+        
+    } catch (error) {
+        log(requestId, 'error', `预加载失败: ${error.message}`);
+        res.writeHead(500, CORS_HEADERS);
+        res.end(JSON.stringify({ error: error.message }));
+    }
+}
+
+// 从CDN预加载数据
+async function preloadFromCDN(redirectUrl, startByte, endByte, cacheKey, requestId) {
+    return new Promise((resolve, reject) => {
+        const parsedUrl = url.parse(redirectUrl);
+        const isHttps = parsedUrl.protocol === 'https:';
+        const httpModule = isHttps ? https : require('http');
+        const agent = cacheSystem.getAgent(parsedUrl.protocol);
+        
+        const options = {
+            hostname: parsedUrl.hostname,
+            port: parsedUrl.port || (isHttps ? 443 : 80),
+            path: parsedUrl.path,
+            method: 'GET',
+            agent,
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Range': `bytes=${startByte}-${endByte}`
+            }
+        };
+        
+        const chunks = [];
+        
+        const proxyReq = httpModule.request(options, (proxyRes) => {
+            if (proxyRes.statusCode === 206) {
+                proxyRes.on('data', chunk => chunks.push(chunk));
+                proxyRes.on('end', () => {
+                    const data = Buffer.concat(chunks);
+                    // 缓存预加载的数据
+                    cacheSystem.preloadCache.set(cacheKey, {
+                        data,
+                        timestamp: Date.now()
+                    });
+                    log(requestId, 'info', `预加载完成: ${formatBytes(data.length)}`);
+                    resolve(data);
+                });
+                proxyRes.on('error', reject);
+            } else {
+                reject(new Error(`CDN预加载失败: ${proxyRes.statusCode}`));
+            }
+        });
+        
+        proxyReq.on('error', reject);
+        proxyReq.end();
+    });
+}
+
+// 从上游服务器预加载数据
+async function preloadFromUpstream(targetUrl, startByte, endByte, cacheKey, requestId) {
+    return new Promise((resolve, reject) => {
+        const response = makeRequest('GET', targetUrl, {
+            host: TARGET_HOST,
+            Range: `bytes=${startByte}-${endByte}`
+        });
+        
+        response.then(res => {
+            if (res.statusCode === 206) {
+                const chunks = [];
+                res.on('data', chunk => chunks.push(chunk));
+                res.on('end', () => {
+                    const data = Buffer.concat(chunks);
+                    cacheSystem.preloadCache.set(cacheKey, {
+                        data,
+                        timestamp: Date.now()
+                    });
+                    log(requestId, 'info', `预加载完成: ${formatBytes(data.length)}`);
+                    resolve(data);
+                });
+                res.on('error', reject);
+            } else {
+                reject(new Error(`上游预加载失败: ${res.statusCode}`));
+            }
+        }).catch(reject);
+    });
 }
 
 // 如果直接运行此脚本

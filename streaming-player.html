@@ -155,6 +155,14 @@
             opacity: 0.6;
         }
         
+        .progress-server {
+            position: absolute;
+            height: 100%;
+            background: #66bb6a;
+            border-radius: 4px;
+            opacity: 0.4;
+        }
+        
         .progress-play {
             position: absolute;
             height: 100%;
@@ -385,13 +393,14 @@
             </div>
             
             <div class="video-section">
-                <video id="videoPlayer" class="video-player" controls preload="metadata">
+                <video id="videoPlayer" class="video-player" controls preload="auto">
                     您的浏览器不支持视频播放
                 </video>
                 
                 <div class="custom-controls">
                     <div class="progress-container" id="progressContainer">
                         <div class="progress-bg" id="progressBg"></div>
+                        <div class="progress-server" id="progressServer"></div>
                         <div class="progress-buffer" id="progressBuffer"></div>
                         <div class="range-segments" id="rangeSegments"></div>
                         <div class="progress-play" id="progressPlay"></div>
@@ -402,13 +411,17 @@
                             <span id="currentTime">00:00</span> / <span id="duration">00:00</span>
                         </div>
                         <div class="buffer-info">
-                            缓冲: <span id="bufferPercent">0%</span> | 
+                            浏览器缓冲: <span id="bufferPercent">0%</span> | 
+                            服务器传输: <span id="serverProgress">0%</span> | 
                             Range请求: <span id="rangeCount">0</span>
+                        </div>
+                        <div class="buffer-explanation" style="font-size: 10px; color: #888; margin-top: 5px;">
+                            💡 绿色条表示服务器实际传输的数据量，蓝色条表示浏览器已缓冲可播放的数据
                         </div>
                     </div>
                 </div>
                 
-                <div class="stats-grid">
+                <div class="stats-grid" style="grid-template-columns: repeat(3, 1fr);">
                     <div class="stat-box">
                         <div class="stat-value" id="downloadSpeed">0 KB/s</div>
                         <div class="stat-label">下载速度</div>
@@ -424,6 +437,14 @@
                     <div class="stat-box">
                         <div class="stat-value" id="cacheHitRate">0%</div>
                         <div class="stat-label">缓存命中率</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-value" id="networkLatency">-- ms</div>
+                        <div class="stat-label">网络延迟</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-value" id="bufferHealth">--</div>
+                        <div class="stat-label">缓冲健康度</div>
                     </div>
                 </div>
             </div>
@@ -508,6 +529,22 @@
         
         // 统计轮询
         let statsInterval = null;
+        
+        // 智能预加载状态
+        let preloadState = {
+            isPreloading: false,
+            lastPlayTime: 0,
+            pauseStartTime: 0,
+            preloadQueue: [],
+            preloadBufferSize: 20 * 1024 * 1024 // 20MB预加载缓冲
+        };
+        
+        // 网络质量监控
+        let networkMonitor = {
+            latencyHistory: [],
+            lastPingTime: 0,
+            averageLatency: 0
+        };
 
         // DOM元素
         const elements = {
@@ -523,6 +560,7 @@
             // 进度条元素
             progressContainer: document.getElementById('progressContainer'),
             progressBg: document.getElementById('progressBg'),
+            progressServer: document.getElementById('progressServer'),
             progressBuffer: document.getElementById('progressBuffer'),
             progressPlay: document.getElementById('progressPlay'),
             rangeSegments: document.getElementById('rangeSegments'),
@@ -531,11 +569,14 @@
             currentTime: document.getElementById('currentTime'),
             duration: document.getElementById('duration'),
             bufferPercent: document.getElementById('bufferPercent'),
+            serverProgress: document.getElementById('serverProgress'),
             rangeCount: document.getElementById('rangeCount'),
             downloadSpeed: document.getElementById('downloadSpeed'),
             totalTransferred: document.getElementById('totalTransferred'),
             activeRequests: document.getElementById('activeRequests'),
             cacheHitRate: document.getElementById('cacheHitRate'),
+            networkLatency: document.getElementById('networkLatency'),
+            bufferHealth: document.getElementById('bufferHealth'),
             
             // 日志和状态
             logsContent: document.getElementById('logsContent'),
@@ -759,6 +800,10 @@
                 stats.totalTransferred = 0;
                 stats.downloadSpeed = 0;
                 
+                // 重置进度显示
+                elements.progressServer.style.width = '0%';
+                elements.serverProgress.textContent = '0%';
+                
                 // 构建视频URL
                 let videoPath = file.href;
                 if (videoPath.startsWith('/webdav/')) {
@@ -834,14 +879,85 @@
             elements.rangeCount.textContent = stats.rangeCount.toString();
         }
 
+        // 网络延迟测试
+        async function measureNetworkLatency() {
+            if (!serverUrl) return;
+            
+            const startTime = performance.now();
+            try {
+                const response = await fetch(serverUrl + '/api/stats', {
+                    method: 'HEAD', // 使用HEAD方法减少数据传输
+                    cache: 'no-cache'
+                });
+                
+                if (response.ok) {
+                    const latency = performance.now() - startTime;
+                    
+                    // 更新延迟历史
+                    networkMonitor.latencyHistory.push(latency);
+                    if (networkMonitor.latencyHistory.length > 10) {
+                        networkMonitor.latencyHistory.shift(); // 保持最近10次测量
+                    }
+                    
+                    // 计算平均延迟
+                    networkMonitor.averageLatency = networkMonitor.latencyHistory.reduce((a, b) => a + b, 0) / networkMonitor.latencyHistory.length;
+                    
+                    return latency;
+                }
+            } catch (error) {
+                // 网络问题
+                return -1;
+            }
+            return -1;
+        }
+
+        // 计算缓冲健康度
+        function calculateBufferHealth() {
+            const video = elements.videoPlayer;
+            if (!video.duration || !video.buffered.length) return 'N/A';
+            
+            const currentTime = video.currentTime;
+            let bufferedAhead = 0;
+            
+            // 计算当前位置之后的缓冲时长
+            for (let i = 0; i < video.buffered.length; i++) {
+                const start = video.buffered.start(i);
+                const end = video.buffered.end(i);
+                
+                if (end > currentTime) {
+                    if (start <= currentTime) {
+                        bufferedAhead += end - currentTime;
+                    } else if (start > currentTime && start < currentTime + 60) {
+                        bufferedAhead += end - start;
+                    }
+                }
+            }
+            
+            // 根据缓冲时长判断健康度
+            if (bufferedAhead > 30) return '优秀';
+            if (bufferedAhead > 15) return '良好';
+            if (bufferedAhead > 5) return '一般';
+            return '较差';
+        }
+
         // 从服务器获取实时统计
         async function fetchServerStats() {
             if (!serverUrl) return;
             
             try {
+                const startTime = performance.now();
                 const response = await fetch(serverUrl + '/api/stats');
+                
                 if (response.ok) {
+                    const latency = performance.now() - startTime;
                     const serverStats = await response.json();
+                    
+                    // 更新网络延迟
+                    networkMonitor.latencyHistory.push(latency);
+                    if (networkMonitor.latencyHistory.length > 5) {
+                        networkMonitor.latencyHistory.shift();
+                    }
+                    networkMonitor.averageLatency = networkMonitor.latencyHistory.reduce((a, b) => a + b, 0) / networkMonitor.latencyHistory.length;
                     
                     // 更新本地统计
                     stats.totalTransferred = serverStats.totalBytesTransferred;
@@ -849,11 +965,62 @@
                     stats.downloadSpeed = serverStats.currentSpeed;
                     stats.rangeCount = serverStats.rangeRequests;
                     
+                    // 更新服务器传输进度显示
+                    if (currentVideo && currentVideo.size > 0) {
+                        const serverProgressPercent = Math.min(100, (stats.totalTransferred / currentVideo.size) * 100);
+                        elements.progressServer.style.width = serverProgressPercent + '%';
+                        elements.serverProgress.textContent = serverProgressPercent.toFixed(1) + '%';
+                    }
+                    
                     // 更新UI
                     updateStats();
+                    updateNetworkStats();
                 }
             } catch (error) {
-                // 静默失败，不显示错误（避免控制台噪音）
+                // 网络错误，更新延迟显示
+                elements.networkLatency.textContent = 'Error';
+                elements.bufferHealth.textContent = 'N/A';
+            }
+        }
+        
+        // 更新网络统计显示
+        function updateNetworkStats() {
+            // 更新网络延迟
+            if (networkMonitor.averageLatency > 0) {
+                elements.networkLatency.textContent = Math.round(networkMonitor.averageLatency) + ' ms';
+                
+                // 根据延迟设置颜色
+                const latencyElement = elements.networkLatency;
+                if (networkMonitor.averageLatency < 100) {
+                    latencyElement.style.color = '#4caf50'; // 绿色 - 良好
+                } else if (networkMonitor.averageLatency < 300) {
+                    latencyElement.style.color = '#ff9800'; // 橙色 - 一般
+                } else {
+                    latencyElement.style.color = '#f44336'; // 红色 - 较差
+                }
+            }
+            
+            // 更新缓冲健康度
+            const bufferHealth = calculateBufferHealth();
+            elements.bufferHealth.textContent = bufferHealth;
+            
+            // 根据健康度设置颜色
+            const healthElement = elements.bufferHealth;
+            switch (bufferHealth) {
+                case '优秀':
+                    healthElement.style.color = '#4caf50';
+                    break;
+                case '良好':
+                    healthElement.style.color = '#8bc34a';
+                    break;
+                case '一般':
+                    healthElement.style.color = '#ff9800';
+                    break;
+                case '较差':
+                    healthElement.style.color = '#f44336';
+                    break;
+                default:
+                    healthElement.style.color = '#ccc';
             }
         }
 
@@ -867,6 +1034,45 @@
             // 基于实际传输数据计算缓存命中率
             const hitRate = stats.totalTransferred > 0 ? Math.min(100, (stats.totalTransferred / (1024 * 1024)) * 2) : 0;
             elements.cacheHitRate.textContent = hitRate.toFixed(0) + '%';
+        }
+
+        // 智能预加载函数
+        async function triggerPreload(currentTime, duration) {
+            if (preloadState.isPreloading || !currentVideo) return;
+            
+            // 计算预加载位置（当前时间往后20MB的数据）
+            const bytesPerSecond = currentVideo.size / duration;
+            const preloadTimeAhead = preloadState.preloadBufferSize / bytesPerSecond; // 预加载多少秒的内容
+            const preloadStartTime = currentTime + 10; // 从当前时间10秒后开始预加载
+            
+            if (preloadStartTime < duration - 30) { // 如果还有足够的内容可预加载
+                const preloadStartByte = Math.floor((preloadStartTime / duration) * currentVideo.size);
+                const preloadEndByte = Math.min(preloadStartByte + preloadState.preloadBufferSize, currentVideo.size - 1);
+                
+                preloadState.isPreloading = true;
+                addLog(`智能预加载: ${formatTime(preloadStartTime)} 位置的 ${formatFileSize(preloadEndByte - preloadStartByte)}`, 'info');
+                
+                try {
+                    // 使用服务器预加载API
+                    let videoPath = currentVideo.href;
+                    if (videoPath.startsWith('/webdav/')) {
+                        videoPath = videoPath.substring('/webdav'.length);
+                    }
+                    
+                    const preloadUrl = `${serverUrl}/api/preload?path=${encodeURIComponent(videoPath)}&start=${preloadStartByte}&size=${preloadEndByte - preloadStartByte}`;
+                    const response = await fetch(preloadUrl);
+                    
+                    if (response.ok) {
+                        addLog('预加载完成', 'success');
+                    } else {
+                        addLog('预加载失败', 'warning');
+                    }
+                } catch (error) {
+                    addLog(`预加载错误: ${error.message}`, 'error');
+                } finally {
+                    preloadState.isPreloading = false;
+                }
+            }
         }
 
         // 监听视频事件
@@ -885,12 +1091,38 @@
 
         elements.videoPlayer.addEventListener('timeupdate', () => {
             updateRangeVisualization();
+            preloadState.lastPlayTime = elements.videoPlayer.currentTime;
         });
 
         elements.videoPlayer.addEventListener('seeking', () => {
             const seekTime = elements.videoPlayer.currentTime;
             addLog(`用户拖拽到: ${formatTime(seekTime)}`, 'info');
-            // 注意：不在这里增加rangeCount，因为实际的Range请求统计由服务器处理
+            // 取消当前的预加载，准备从新位置预加载
+            preloadState.isPreloading = false;
+        });
+
+        elements.videoPlayer.addEventListener('play', () => {
+            addLog('视频播放开始', 'info');
+            // 播放时触发智能预加载
+            if (elements.videoPlayer.duration) {
+                setTimeout(() => {
+                    triggerPreload(elements.videoPlayer.currentTime, elements.videoPlayer.duration);
+                }, 5000); // 播放5秒后开始预加载
+            }
+        });
+
+        elements.videoPlayer.addEventListener('pause', () => {
+            preloadState.pauseStartTime = Date.now();
+            addLog('视频暂停', 'info');
+            
+            // 暂停时积极预加载
+            if (elements.videoPlayer.duration) {
+                setTimeout(() => {
+                    if (elements.videoPlayer.paused) { // 确认仍在暂停状态
+                        triggerPreload(elements.videoPlayer.currentTime, elements.videoPlayer.duration);
+                    }
+                }, 2000); // 暂停2秒后开始预加载
+            }
         });
 
         elements.videoPlayer.addEventListener('error', (e) => {
