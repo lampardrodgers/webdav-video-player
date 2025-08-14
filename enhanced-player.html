@@ -89,25 +89,53 @@
         }
         .progress-container {
             position: relative;
-            height: 6px;
+            height: 8px;
             background: #555;
-            border-radius: 3px;
+            border-radius: 4px;
             margin: 10px 0;
             cursor: pointer;
+            overflow: hidden;
         }
         .progress-buffer {
             position: absolute;
             height: 100%;
             background: #777;
-            border-radius: 3px;
+            border-radius: 4px;
             transition: width 0.1s;
+        }
+        .progress-segments {
+            position: absolute;
+            height: 100%;
+            width: 100%;
+            top: 0;
+            left: 0;
+        }
+        .progress-segment {
+            position: absolute;
+            height: 100%;
+            background: #28a745;
+            opacity: 0.6;
+            border-radius: 1px;
+        }
+        .progress-downloading {
+            position: absolute;
+            height: 100%;
+            background: #ffc107;
+            opacity: 0.8;
+            border-radius: 1px;
+            animation: pulse 1s infinite;
         }
         .progress-bar {
             position: absolute;
             height: 100%;
             background: #007bff;
-            border-radius: 3px;
+            border-radius: 4px;
             transition: width 0.1s;
+            z-index: 10;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 0.8; }
+            50% { opacity: 0.4; }
         }
         .time-display {
             display: flex;
@@ -259,6 +287,25 @@
                     <input type="text" id="basePath" value="/小鲸鱼" />
                 </div>
             </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label>预加载策略:</label>
+                    <select id="preloadMode" style="width: 100%; padding: 10px; background: #1a1a1a; border: 1px solid #555; color: white; border-radius: 4px;">
+                        <option value="auto">自动预缓冲 (推荐)</option>
+                        <option value="metadata">仅元数据</option>
+                        <option value="none">不预加载</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>缓冲大小:</label>
+                    <select id="bufferSize" style="width: 100%; padding: 10px; background: #1a1a1a; border: 1px solid #555; color: white; border-radius: 4px;">
+                        <option value="5">5MB (移动网络)</option>
+                        <option value="10" selected>10MB (标准)</option>
+                        <option value="20">20MB (高速网络)</option>
+                        <option value="50">50MB (本地网络)</option>
+                    </select>
+                </div>
+            </div>
             <button id="connectBtn">连接服务器</button>
             <button id="refreshBtn" class="hidden">刷新文件</button>
             <button id="statsBtn" class="hidden">查看统计</button>
@@ -267,17 +314,20 @@
         <div class="main-layout">
             <div class="video-section">
                 <div class="video-container">
-                    <video id="videoPlayer" preload="metadata">
+                    <video id="videoPlayer" preload="auto" controls>
                         您的浏览器不支持视频播放
                     </video>
                 </div>
                 <div class="video-controls">
                     <div class="progress-container" id="progressContainer">
                         <div class="progress-buffer" id="progressBuffer"></div>
+                        <div class="progress-segments" id="progressSegments"></div>
                         <div class="progress-bar" id="progressBar"></div>
                     </div>
                     <div class="time-display">
                         <span id="currentTime">00:00</span>
+                        <span>缓冲: <span id="bufferStatus">0%</span></span>
+                        <span>网速: <span id="networkSpeed">0 KB/s</span></span>
                         <span id="duration">00:00</span>
                     </div>
                 </div>
@@ -343,6 +393,8 @@
         let basePath = '';
         let currentVideo = null;
         let statsInterval = null;
+        let preloadInterval = null;
+        let bufferConfig = { mode: 'auto', size: 10 }; // MB
 
         // DOM元素
         const elements = {
@@ -350,13 +402,18 @@
             username: document.getElementById('username'),
             password: document.getElementById('password'),
             basePath: document.getElementById('basePath'),
+            preloadMode: document.getElementById('preloadMode'),
+            bufferSize: document.getElementById('bufferSize'),
             connectBtn: document.getElementById('connectBtn'),
             refreshBtn: document.getElementById('refreshBtn'),
             statsBtn: document.getElementById('statsBtn'),
             videoPlayer: document.getElementById('videoPlayer'),
             progressContainer: document.getElementById('progressContainer'),
             progressBuffer: document.getElementById('progressBuffer'),
+            progressSegments: document.getElementById('progressSegments'),
             progressBar: document.getElementById('progressBar'),
+            bufferStatus: document.getElementById('bufferStatus'),
+            networkSpeed: document.getElementById('networkSpeed'),
             currentTime: document.getElementById('currentTime'),
             duration: document.getElementById('duration'),
             videoStatus: document.getElementById('videoStatus'),
@@ -524,6 +581,258 @@
             });
         }
 
+        // 更新缓冲配置
+        function updateBufferConfig() {
+            bufferConfig.mode = elements.preloadMode.value;
+            bufferConfig.size = parseInt(elements.bufferSize.value);
+            
+            // 更新视频preload属性
+            elements.videoPlayer.preload = bufferConfig.mode;
+            
+            addLog(`缓冲配置已更新: ${bufferConfig.mode}, ${bufferConfig.size}MB`, 'info');
+        }
+
+        // 智能预缓冲状态
+        let prebufferState = {
+            isActive: false,
+            lastPosition: 0,
+            speed: 0, // bytes per second
+            queue: [],
+            downloading: new Set(),
+            cachedSegments: new Map(), // 缓存的分段信息
+            downloadStats: {
+                totalBytes: 0,
+                totalTime: 0,
+                recentSpeeds: []
+            }
+        };
+
+        // 更新缓冲段可视化
+        function updateBufferVisualization() {
+            if (!currentVideo) return;
+            
+            const segmentsContainer = elements.progressSegments;
+            segmentsContainer.innerHTML = '';
+            
+            // 显示已缓存的分段
+            for (const [key, segment] of prebufferState.cachedSegments) {
+                const startPercent = (segment.start / currentVideo.size) * 100;
+                const endPercent = (segment.end / currentVideo.size) * 100;
+                const width = Math.max(0.1, endPercent - startPercent); // 最小0.1%宽度
+                
+                const segmentDiv = document.createElement('div');
+                segmentDiv.className = 'progress-segment';
+                segmentDiv.style.left = startPercent + '%';
+                segmentDiv.style.width = width + '%';
+                segmentDiv.title = `缓存分段: ${Math.floor(segment.start / 1024 / 1024)}MB - ${Math.floor(segment.end / 1024 / 1024)}MB`;
+                
+                segmentsContainer.appendChild(segmentDiv);
+            }
+            
+            // 显示正在下载的分段
+            for (const key of prebufferState.downloading) {
+                const [start, end] = key.split('-').map(Number);
+                const startPercent = (start / currentVideo.size) * 100;
+                const endPercent = (end / currentVideo.size) * 100;
+                const width = Math.max(0.1, endPercent - startPercent);
+                
+                const downloadingDiv = document.createElement('div');
+                downloadingDiv.className = 'progress-downloading';
+                downloadingDiv.style.left = startPercent + '%';
+                downloadingDiv.style.width = width + '%';
+                downloadingDiv.title = `下载中: ${Math.floor(start / 1024 / 1024)}MB - ${Math.floor(end / 1024 / 1024)}MB`;
+                
+                segmentsContainer.appendChild(downloadingDiv);
+            }
+        }
+
+        // 更新网速显示
+        function updateNetworkSpeed() {
+            const stats = prebufferState.downloadStats;
+            if (stats.recentSpeeds.length > 0) {
+                const avgSpeed = stats.recentSpeeds.reduce((a, b) => a + b, 0) / stats.recentSpeeds.length;
+                const speedText = avgSpeed > 1024 ? 
+                    `${(avgSpeed / 1024).toFixed(1)} MB/s` : 
+                    `${avgSpeed.toFixed(0)} KB/s`;
+                
+                elements.networkSpeed.textContent = speedText;
+                elements.downloadSpeed.textContent = speedText;
+            }
+        }
+
+        // 更新缓冲状态
+        function updateBufferStatus() {
+            if (!currentVideo) return;
+            
+            const video = elements.videoPlayer;
+            const buffered = video.buffered;
+            
+            if (buffered.length > 0 && video.duration) {
+                let bufferedDuration = 0;
+                for (let i = 0; i < buffered.length; i++) {
+                    bufferedDuration += buffered.end(i) - buffered.start(i);
+                }
+                
+                const bufferPercent = (bufferedDuration / video.duration * 100).toFixed(1);
+                elements.bufferStatus.textContent = bufferPercent + '%';
+                
+                // 更新浏览器原生缓冲条
+                if (buffered.length > 0) {
+                    const bufferProgress = (buffered.end(buffered.length - 1) / video.duration) * 100;
+                    elements.progressBuffer.style.width = bufferProgress + '%';
+                }
+            }
+        }
+
+        // 计算播放速度
+        function calculatePlaybackSpeed() {
+            const video = elements.videoPlayer;
+            if (!video.duration || !video.currentTime) return 0;
+            
+            const now = Date.now();
+            const currentPos = video.currentTime;
+            const timeDelta = (now - (prebufferState.lastCheck || now)) / 1000;
+            const posDelta = currentPos - prebufferState.lastPosition;
+            
+            if (timeDelta > 0) {
+                const bytesPerSecond = (posDelta / video.duration) * currentVideo.size / timeDelta;
+                prebufferState.speed = Math.max(0, bytesPerSecond);
+            }
+            
+            prebufferState.lastPosition = currentPos;
+            prebufferState.lastCheck = now;
+            
+            return prebufferState.speed;
+        }
+
+        // 智能预缓冲函数
+        async function backgroundPrebuffer(videoUrl, currentTime, duration) {
+            if (bufferConfig.mode !== 'auto' || !currentVideo || prebufferState.isActive) return;
+            
+            prebufferState.isActive = true;
+            
+            try {
+                const video = elements.videoPlayer;
+                const isPaused = video.paused;
+                const playbackSpeed = calculatePlaybackSpeed();
+                
+                // 计算当前播放位置的字节位置
+                const currentByte = Math.floor((currentTime / duration) * currentVideo.size);
+                const segmentSize = 2 * 1024 * 1024; // 2MB
+                
+                // 确定预缓冲策略
+                let prebufferBytes = bufferConfig.size * 1024 * 1024; // 基础缓冲大小
+                
+                if (isPaused) {
+                    // 暂停时，更积极地预缓冲
+                    prebufferBytes = Math.min(prebufferBytes * 2, 50 * 1024 * 1024); // 最多50MB
+                    addLog('视频暂停，启动积极预缓冲', 'info');
+                } else if (playbackSpeed > 0) {
+                    // 根据播放速度调整预缓冲大小
+                    const predictedNeedBytes = playbackSpeed * 30; // 预测30秒需要的数据
+                    prebufferBytes = Math.max(prebufferBytes, predictedNeedBytes);
+                }
+                
+                // 分段下载
+                const segments = [];
+                let nextByte = currentByte;
+                const maxByte = Math.min(currentByte + prebufferBytes, currentVideo.size - 1);
+                
+                while (nextByte < maxByte) {
+                    const segmentEnd = Math.min(nextByte + segmentSize - 1, maxByte);
+                    const segmentKey = `${nextByte}-${segmentEnd}`;
+                    
+                    // 避免重复下载
+                    if (!prebufferState.downloading.has(segmentKey)) {
+                        segments.push({ start: nextByte, end: segmentEnd, key: segmentKey });
+                        prebufferState.downloading.add(segmentKey);
+                    }
+                    
+                    nextByte = segmentEnd + 1;
+                }
+                
+                if (segments.length === 0) {
+                    prebufferState.isActive = false;
+                    return;
+                }
+                
+                addLog(`启动预缓冲: ${segments.length} 个分段，总计 ${Math.floor(prebufferBytes / 1024 / 1024)}MB`, 'info');
+                
+                // 并发下载多个分段（最多3个并发）
+                const concurrency = Math.min(3, segments.length);
+                const promises = [];
+                
+                for (let i = 0; i < concurrency; i++) {
+                    promises.push(downloadSegmentQueue(videoUrl, segments, i));
+                }
+                
+                await Promise.all(promises);
+                
+            } catch (error) {
+                addLog(`预缓冲出错: ${error.message}`, 'warning');
+            } finally {
+                prebufferState.isActive = false;
+            }
+        }
+
+        // 分段队列下载器
+        async function downloadSegmentQueue(videoUrl, segments, workerId) {
+            while (segments.length > 0) {
+                const segment = segments.shift();
+                if (!segment) break;
+                
+                try {
+                    const startTime = Date.now();
+                    addLog(`Worker${workerId}: 下载分段 ${Math.floor(segment.start / 1024 / 1024)}MB-${Math.floor(segment.end / 1024 / 1024)}MB`, 'info');
+                    
+                    const response = await fetch(videoUrl, {
+                        headers: {
+                            'Range': `bytes=${segment.start}-${segment.end}`
+                        }
+                    });
+                    
+                    if (response.ok) {
+                        const duration = Date.now() - startTime;
+                        const size = parseInt(response.headers.get('content-length') || '0');
+                        const speedKBps = size > 0 ? (size / duration * 1000 / 1024) : 0;
+                        
+                        // 记录分段缓存信息
+                        prebufferState.cachedSegments.set(segment.key, {
+                            start: segment.start,
+                            end: segment.end,
+                            size: size,
+                            timestamp: Date.now()
+                        });
+                        
+                        // 更新下载统计
+                        prebufferState.downloadStats.totalBytes += size;
+                        prebufferState.downloadStats.totalTime += duration;
+                        prebufferState.downloadStats.recentSpeeds.push(speedKBps);
+                        
+                        // 保持最近10次的速度记录
+                        if (prebufferState.downloadStats.recentSpeeds.length > 10) {
+                            prebufferState.downloadStats.recentSpeeds.shift();
+                        }
+                        
+                        addLog(`Worker${workerId}: 分段下载完成 ${Math.floor(size / 1024)}KB, 速度: ${speedKBps.toFixed(1)}KB/s`, 'success');
+                        
+                        // 读取响应体以确保完整下载
+                        await response.arrayBuffer();
+                        
+                        // 更新可视化
+                        updateBufferVisualization();
+                        updateNetworkSpeed();
+                    } else {
+                        addLog(`Worker${workerId}: 分段下载失败 ${response.status}`, 'warning');
+                    }
+                } catch (error) {
+                    addLog(`Worker${workerId}: 分段下载错误 ${error.message}`, 'warning');
+                } finally {
+                    prebufferState.downloading.delete(segment.key);
+                }
+            }
+        }
+
         // 播放视频
         async function playVideo(file) {
             try {
@@ -548,13 +857,45 @@
                 const videoUrl = serverUrl + videoPath;
                 addLog(`视频URL: ${videoUrl}`, 'info');
                 
+                // 更新缓冲配置
+                updateBufferConfig();
+                
                 // 设置视频源
                 elements.videoPlayer.src = videoUrl;
                 elements.videoStatus.textContent = `加载中: ${file.name}`;
                 
-                // 重置进度条
+                // 重置进度条和缓冲可视化
                 elements.progressBar.style.width = '0%';
                 elements.progressBuffer.style.width = '0%';
+                elements.progressSegments.innerHTML = '';
+                elements.bufferStatus.textContent = '0%';
+                elements.networkSpeed.textContent = '0 KB/s';
+                
+                // 重置预缓冲状态
+                prebufferState.cachedSegments.clear();
+                prebufferState.downloading.clear();
+                prebufferState.downloadStats = {
+                    totalBytes: 0,
+                    totalTime: 0,
+                    recentSpeeds: []
+                };
+                
+                // 清除之前的预缓冲定时器
+                if (preloadInterval) {
+                    clearInterval(preloadInterval);
+                }
+                
+                // 如果是自动模式，设置预缓冲定时器
+                if (bufferConfig.mode === 'auto') {
+                    preloadInterval = setInterval(() => {
+                        const duration = elements.videoPlayer.duration;
+                        const currentTime = elements.videoPlayer.currentTime;
+                        
+                        if (duration && currentTime !== undefined) {
+                            backgroundPrebuffer(videoUrl, currentTime, duration);
+                        }
+                    }, 5000); // 每5秒检查一次预缓冲
+                }
                 
             } catch (error) {
                 addLog(`播放失败: ${error.message}`, 'error');
@@ -621,14 +962,7 @@
         });
 
         elements.videoPlayer.addEventListener('progress', () => {
-            const buffered = elements.videoPlayer.buffered;
-            const duration = elements.videoPlayer.duration;
-            
-            if (buffered.length > 0 && duration > 0) {
-                const bufferedEnd = buffered.end(buffered.length - 1);
-                const bufferProgress = (bufferedEnd / duration) * 100;
-                elements.progressBuffer.style.width = bufferProgress + '%';
-            }
+            updateBufferStatus();
         });
 
         elements.videoPlayer.addEventListener('waiting', () => {
@@ -665,6 +999,10 @@
         elements.refreshBtn.addEventListener('click', () => {
             if (isConnected) connectToServer();
         });
+        
+        // 预加载设置事件监听
+        elements.preloadMode.addEventListener('change', updateBufferConfig);
+        elements.bufferSize.addEventListener('change', updateBufferConfig);
 
         // 初始化
         addLog('增强版WebDAV播放器已启动', 'info');
